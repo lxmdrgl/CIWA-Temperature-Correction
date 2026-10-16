@@ -1,0 +1,9 @@
+scikit-learn
+opencv-python
+numpy
+
+hydra-core
+omegaconf
+
+matplotlib
+tqdm
