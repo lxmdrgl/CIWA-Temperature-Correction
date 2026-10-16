@@ -1,0 +1,60 @@
+////////////////
+Original Labels:
+////////////////
+
+Number of images: 71
+Mean sunlit pixels per image: 1133.03
+Standard deviation of sunlit pixels per image: 421.81
+Minimum sunlit pixels in an image: 269
+Maximum sunlit pixels in an image: 2202
+
+Z-score for 99.900% confidence level: 3.291
+Margin of error: 0.10
+Mean sunlit pixel temperature: 30.50 °C
+Standard deviation of sunlit pixel temperatures: 3.97 °C
+Minimum sample size: 17047 sunlit pixels
+Confidence Interval: (30.40, 30.60)
+
+////////////////
+FRRN-A:
+////////////////
+
+Accuracy: 0.8379 
+Precision: 0.7317
+
+Number of images: 71
+Mean sunlit pixels per image: 811.69
+Standard deviation of sunlit pixels per image: 301.40
+Minimum sunlit pixels in an image: 61
+Maximum sunlit pixels in an image: 1437
+
+Z-score for 99.900% confidence level: 3.291
+Margin of error: 0.10
+Mean sunlit pixel temperature: 30.37 °C
+Standard deviation of sunlit pixel temperatures: 3.65 °C
+Minimum sample size: 14444 sunlit pixels
+Confidence Interval: (30.27, 30.47)
+
+Earth Mover's Distance: 0.1282 °C
+
+////////////////
+FC-DenseNet103
+////////////////
+
+Accuracy: 0.8387
+Precision: 0.7311
+
+Number of images: 71
+Mean sunlit pixels per image: 798.38
+Standard deviation of sunlit pixels per image: 285.06
+Minimum sunlit pixels in an image: 162
+Maximum sunlit pixels in an image: 1481
+
+Z-score for 99.900% confidence level: 3.291
+Margin of error: 0.10
+Mean sunlit pixel temperature: 29.94 °C
+Standard deviation of sunlit pixel temperatures: 2.70 °C
+Minimum sample size: 7899 sunlit pixels
+Confidence Interval: (29.84, 30.04)
+
+Earth Mover's Distance: 0.5568 °C

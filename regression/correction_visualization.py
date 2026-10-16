@@ -18,13 +18,13 @@ def main():
     }
     all_temperatures = np.concatenate([data.ravel() for data in temperature_data.values()])
     mean_bins = np.histogram_bin_edges(
-        all_temperatures[np.isfinite(all_temperatures)], bins=25
+        all_temperatures[np.isfinite(all_temperatures)], bins=50
     )
     all_corrections = np.concatenate([
         data[:, 0] - data[:, 1] for data in temperature_data.values()
     ])
     correction_bins = np.histogram_bin_edges(
-        all_corrections[np.isfinite(all_corrections)], bins=25
+        all_corrections[np.isfinite(all_corrections)], bins=50
     )
     fig, axes = plt.subplots(
         4, 3, figsize=(12, 11), sharex=True, sharey="col", layout="constrained"
