@@ -32,6 +32,31 @@ python --version
 python -m pip install -r requirements.txt
 ```
 
+## Data folder structure
+
+The tomato dataset is stored in `data/tomato/`. Each branch is divided into `train`, `valid` (validation), and `test` splits.
+
+```text
+data/tomato/
+├── original/
+│   └── {train,valid,test}/
+│       ├── label/
+│       ├── raw/
+│       ├── thermal/
+│       ├── thermal-data/
+│       └── visual/
+├── fcdensenet/
+│   └── {train,valid,test}/
+│       ├── logits/
+│       └── predictions/
+└── frrna/
+    └── {train,valid,test}/
+        ├── logits/
+        └── predictions/
+```
+
+`original/` contains the source data and labels. `fcdensenet/` and `frrna/` contain the corresponding models' logits and predictions. The `{train,valid,test}` notation represents three separate folders.
+
 ## Returning to the project
 
 Activate the virtual environment each time you open a new terminal:
