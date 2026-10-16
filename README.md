@@ -41,16 +41,12 @@ data/tomato/
 ├── original/
 │   └── {train,valid,test}/
 │       ├── label/
-│       ├── thermal-data/
+│       ├── thermal/
 │       └── visual/
-├── fcdensenet/
-│   └── {train,valid,test}/
-│       ├── logits/
-│       └── predictions/
-└── frrna/
+└── {fcdensenet,frrna}/
     └── {train,valid,test}/
-        ├── logits/
-        └── predictions/
+        ├── logit/
+        └── prediction/
 ```
 
 `original/` contains the source data and labels. `fcdensenet/` and `frrna/` contain the corresponding models' logits and predictions. The `{train,valid,test}` notation represents three separate folders.
