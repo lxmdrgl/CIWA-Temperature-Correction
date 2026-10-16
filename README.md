@@ -41,8 +41,6 @@ data/tomato/
 ├── original/
 │   └── {train,valid,test}/
 │       ├── label/
-│       ├── raw/
-│       ├── thermal/
 │       ├── thermal-data/
 │       └── visual/
 ├── fcdensenet/
