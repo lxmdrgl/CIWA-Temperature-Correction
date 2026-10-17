@@ -1,5 +1,6 @@
 # dataset
 data/
+results/mask_visualization/
 
 # environment
 .venv/
