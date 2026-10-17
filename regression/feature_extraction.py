@@ -72,7 +72,7 @@ from tqdm import tqdm
 
 
 plant = "tomato"
-model = "fcdensenet"
+model = "frrna"
 root = Path(__file__).resolve().parents[1]
 data_path = root / "data" / plant
 output_path = root / "results" / "feature_extraction" / plant / model

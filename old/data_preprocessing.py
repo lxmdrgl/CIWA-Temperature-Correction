@@ -29,6 +29,16 @@ def mean_temperature_area(thermal, mask_path):
     return np.average(thermal[valid], weights=weights[valid])
 
 
+def mean_temperature_area_threshold(thermal, mask_path):
+    coverage = cv2.resize(
+        sunlit_mask(mask_path),
+        (thermal.shape[1], thermal.shape[0]),
+        interpolation=cv2.INTER_AREA,
+    )
+    valid = np.isfinite(thermal) & (coverage >= 0.5)
+    return thermal[valid].mean() if valid.any() else np.nan
+
+
 def mean_temperature_nearest(thermal, mask_path):
     mask = cv2.resize(
         sunlit_mask(mask_path),
@@ -49,6 +59,7 @@ def main():
         for method, mean_temperature in (
             ("area", mean_temperature_area),
             ("nearest", mean_temperature_nearest),
+            ("area_threshold", mean_temperature_area_threshold),
         ):
             temperatures = {model: [] for model in ("fcdensenet", "frrna")}
             for path in tqdm(thermal_paths, desc=f"{split}: {method}", unit="image"):
