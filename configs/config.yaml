@@ -6,7 +6,7 @@ dataset:
   crop: tomato
 
   # model: fcdensenet, frrna
-  model:
+  model: fcdensenet
 
   # image: all, thermal, visual
   image: thermal
