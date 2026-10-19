@@ -1,13 +1,13 @@
 import torch
 import torch.nn as nn
 
-class CNNClassifier(nn.Module):
-    def __init__(self, in_channels=1, hidden_size=256, num_classes=10, dropout=0.2):
+class CNNRegressor(nn.Module):
+    def __init__(self, in_channels=1, hidden_size=256, num_outputs=1, dropout=0.2):
         super().__init__()
 
         self.in_channels = in_channels
         self.hidden_size = hidden_size
-        self.num_classes = num_classes
+        self.num_outputs = num_outputs
         self.dropout = dropout
         
         self.features = nn.Sequential(
@@ -34,7 +34,7 @@ class CNNClassifier(nn.Module):
             nn.ReLU(),
             nn.Dropout(self.dropout),
             
-            nn.Linear(self.hidden_size, self.num_classes)  # output
+            nn.Linear(self.hidden_size, self.num_outputs)  # output
         )
 
     def forward(self, x):
