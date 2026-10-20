@@ -7,11 +7,12 @@ import os
 def train_model(model, train_loader, criterion, optimizer, device):
     model.train()
     running_loss = 0
+    total = 0
     
     for inputs, targets in train_loader:
         # use device
         inputs = inputs.to(device, non_blocking=True)
-        targets = labels.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
         
         # go forward through model and find loss
         outputs = model(inputs)
@@ -22,9 +23,12 @@ def train_model(model, train_loader, criterion, optimizer, device):
         loss.backward()
         optimizer.step()
         
-        running_loss += loss.item()
+        batch_size = inputs.size(0)
+        running_loss += loss.item() * batch_size
+        total += batch_size
 
-    epoch_loss = running_loss / len(train_loader)
+    epoch_loss = running_loss / total
+    
     return epoch_loss
 
 def evaluate_model(model, test_loader, criterion, device):
@@ -49,7 +53,7 @@ def evaluate_model(model, test_loader, criterion, device):
     return epoch_loss
 
 # saves model to folder: checkpoints/name.pt
-def save_model(model, optimizer, epoch, train_loss, val_loss, test_error, name):
+def save_model(model, optimizer, epoch, train_loss, val_loss, test_error, name, config=None):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     filename = f"{name}_val{min(val_loss):.4f}_{timestamp}.pt" 
     
@@ -64,4 +68,6 @@ def save_model(model, optimizer, epoch, train_loss, val_loss, test_error, name):
         "val_loss": val_loss,
         "test_error": test_error,
         "timestamp": timestamp,
+        "config": config,
     }, save_path)
+    return save_path

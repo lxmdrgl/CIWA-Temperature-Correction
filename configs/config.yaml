@@ -3,6 +3,7 @@ defaults:
   - override hydra/job_logging: disabled # prevents .log generation
 
 dataset:
+  root: data
   crop: tomato
 
   # model: fcdensenet, frrna
@@ -17,10 +18,20 @@ dataset:
   # interpolation: nearest, area
   interpolation: nearest
 
-optimization:
   # target: direct, correction
   target: direct
 
+train:
+  seed: 0
+  model: mlp
+  loss: mse
+  epochs: 100
+  batch_size: 16
+  shuffle: true
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  patience: 15
+  optimizer: adamw
 
 hydra:
   run:
