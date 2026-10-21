@@ -70,7 +70,7 @@ def main(cfg: DictConfig) -> None:
         weight_decay=cfg.train.weight_decay,
     )
 
-    train_losses, valid_losses = [], []
+    train_losses, valid_losses, test_losses = [], [], []
     best_loss = float("inf")
     best_state = None
     epochs_without_improvement = 0
@@ -78,14 +78,17 @@ def main(cfg: DictConfig) -> None:
     for epoch in range(1, cfg.train.epochs + 1):
         train_loss = train_model(model, train_loader, criterion, optimizer, device)
         valid_loss = evaluate_model(model, valid_loader, criterion, device)
+        test_loss = evaluate_model(model, test_loader, criterion, device)
         if not (torch.isfinite(torch.tensor(train_loss))
                 and torch.isfinite(torch.tensor(valid_loss))):
             raise ValueError("Training or validation loss is not finite")
         train_losses.append(train_loss)
         valid_losses.append(valid_loss)
+        test_losses.append(test_loss)
         print(
             f"Epoch {epoch}/{cfg.train.epochs}: "
-            f"train={train_loss:.4f}, valid={valid_loss:.4f}", flush=True
+            f"train={train_loss:.4f}, valid={valid_loss:.4f}, "
+            f"test={test_loss:.4f}", flush=True
         )
 
         if valid_loss < best_loss:
@@ -102,16 +105,15 @@ def main(cfg: DictConfig) -> None:
 
     model.load_state_dict(best_state)
     optimizer.load_state_dict(best_optimizer)
-    test_loss = evaluate_model(model, test_loader, criterion, device)
-    print(f"Best epoch: {best_epoch}. Test {cfg.train.loss}: {test_loss:.4f}")
+    print(f"Best epoch: {best_epoch}. Validation {cfg.train.loss}: {best_loss:.4f}")
 
     name = (
         f"{cfg.train.model}_{cfg.dataset.crop}_{cfg.dataset.model}_"
         f"{cfg.dataset.image}_{cfg.dataset.mask}_{cfg.dataset.interpolation}_"
-        f"{cfg.dataset.target}_seed{seed}"
+        f"{cfg.dataset.target}_{cfg.train.loss}_seed{seed}"
     )
     save_path = save_model(
-        model, optimizer, best_epoch, train_losses, valid_losses, test_loss, name,
+        model, optimizer, best_epoch, train_losses, valid_losses, test_losses, name,
         config=OmegaConf.to_container(cfg, resolve=True),
     )
     print(f"Saved checkpoint: {save_path}")

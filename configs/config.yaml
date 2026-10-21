@@ -23,7 +23,9 @@ dataset:
 
 train:
   seed: 0
+  # model: mlp, cnn
   model: mlp
+  # loss: mse, mae
   loss: mse
   epochs: 100
   batch_size: 16
@@ -31,6 +33,7 @@ train:
   learning_rate: 0.001
   weight_decay: 0.0001
   patience: 15
+  # optimizer: adam, adamw, sgd 
   optimizer: adamw
 
 hydra:
