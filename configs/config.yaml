@@ -36,6 +36,11 @@ train:
   # optimizer: adam, adamw, sgd 
   optimizer: adamw
 
+visualize:
+  # split: train, valid, test
+  split: valid
+  index: 0
+
 hydra:
   run:
     # dir: runs/${now:%Y-%m-%d_%H-%M-%S} # use if you want to save runs
