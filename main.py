@@ -15,6 +15,9 @@ from utils.training import train_model, evaluate_model, save_model
 
 @hydra.main(version_base="1.3", config_path="configs", config_name="config")
 def main(cfg: DictConfig) -> None:
+    if cfg.train.model not in {"mlp", "cnn", "resnet18"}:
+        raise ValueError(f"Invalid training model: {cfg.train.model}. Choose mlp, cnn, or resnet18.")
+    cfg.dataset.root = to_absolute_path(cfg.dataset.root)
     seed = cfg.train.get("seed", 0)
     random.seed(seed)
     np.random.seed(seed)
@@ -27,7 +30,6 @@ def main(cfg: DictConfig) -> None:
         raise ValueError("batch_size must be at least 2 for batch normalization")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    cfg.dataset.root = to_absolute_path(cfg.dataset.root)
     print(f"Loading data. Device: {device}", flush=True)
 
     train_data, train_labels = load_dataset(cfg, "train")
@@ -48,11 +50,18 @@ def main(cfg: DictConfig) -> None:
     )
 
     if cfg.train.model == "mlp":
-        model = MLPRegressor(input_size=train_data[0].numel())
+        model = MLPRegressor(input_size=train_data[0].numel(), image=cfg.dataset.image)
     elif cfg.train.model == "cnn":
-        model = CNNRegressor(in_channels=train_data.shape[1])
-    else:
-        raise ValueError(f"Invalid training model: {cfg.train.model}")
+        model = CNNRegressor(in_channels=train_data.shape[1], image=cfg.dataset.image)
+    elif cfg.train.model == "resnet18":
+        from models.resnet18 import ResNet18Regressor
+
+        model = ResNet18Regressor(
+            in_channels=train_data.shape[1], image=cfg.dataset.image,
+            pretrained=cfg.train.resnet18.pretrained,
+            freeze_backbone=cfg.train.resnet18.freeze_backbone,
+        )
+    model.fit_normalization(train_data)
     model = model.to(device)
 
     losses = {"mse": nn.MSELoss, "mae": nn.L1Loss}
@@ -65,7 +74,7 @@ def main(cfg: DictConfig) -> None:
     if cfg.train.optimizer not in optimizers:
         raise ValueError(f"Invalid optimizer: {cfg.train.optimizer}")
     optimizer = optimizers[cfg.train.optimizer](
-        model.parameters(),
+        (parameter for parameter in model.parameters() if parameter.requires_grad),
         lr=cfg.train.learning_rate,
         weight_decay=cfg.train.weight_decay,
     )

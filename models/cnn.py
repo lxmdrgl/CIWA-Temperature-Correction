@@ -1,9 +1,10 @@
-import torch
 import torch.nn as nn
+from models.normalization import TemperatureNormalizedRegressor
 
-class CNNRegressor(nn.Module):
-    def __init__(self, in_channels=1, hidden_size=256, num_outputs=1, dropout=0.2):
-        super().__init__()
+class CNNRegressor(TemperatureNormalizedRegressor):
+    def __init__(self, in_channels=1, hidden_size=256, num_outputs=1, dropout=0.2,
+                 image="thermal", normalize=True):
+        super().__init__(image=image, normalize=normalize)
 
         self.in_channels = in_channels
         self.hidden_size = hidden_size
@@ -38,6 +39,7 @@ class CNNRegressor(nn.Module):
         )
 
     def forward(self, x):
+        x = self.normalize_inputs(x)
         x = self.features(x)
         x = self.classifier(x)
         return x

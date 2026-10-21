@@ -5,25 +5,20 @@ defaults:
 dataset:
   root: data
   crop: tomato
-
   # model: fcdensenet, frrna
   model: fcdensenet
-
   # image: all, thermal, visual
   image: thermal
-
   # mask: both, soft, hard
   mask: both
-
   # interpolation: nearest, area
   interpolation: nearest
-
   # target: direct, correction
   target: direct
 
 train:
   seed: 0
-  # model: base, mlp, cnn
+  # model: mlp, cnn, resnet18
   model: mlp
   # loss: mse, mae
   loss: mse
@@ -35,6 +30,11 @@ train:
   patience: 15
   # optimizer: adam, adamw, sgd 
   optimizer: adamw
+  # ResNet-18 settings; unused by mlp and cnn
+  resnet18:
+    pretrained: true
+    # Train only the regression head and thermal input convolution when true
+    freeze_backbone: false
 
 visualize:
   # split: train, valid, test
@@ -42,9 +42,18 @@ visualize:
   index: 0
 
 evaluate:
+  root: checkpoints
   # split: train, valid, test
   split: test
-  checkpoint: null
+  # checkpoint: all, single
+  checkpoint: single
+  # Filename within root; required only when checkpoint is single
+  name:  resnet18_tomato_fcdensenet_thermal_both_nearest_correction_mse_seed0_val0.5401_2026-10-21_13-19-09.pt
+  # Include a hard-mask baseline row for each checkpoint's dataset settings
+  baseline: true
+  output: results/resnet18.csv
+  # Matching training config for old checkpoints without a saved config
+  legacy_config: null
 
 hydra:
   run:
