@@ -23,7 +23,7 @@ dataset:
 
 train:
   seed: 0
-  # model: mlp, cnn
+  # model: base, mlp, cnn
   model: mlp
   # loss: mse, mae
   loss: mse
@@ -38,8 +38,13 @@ train:
 
 visualize:
   # split: train, valid, test
-  split: valid
+  split: test
   index: 0
+
+evaluate:
+  # split: train, valid, test
+  split: test
+  checkpoint: null
 
 hydra:
   run:
