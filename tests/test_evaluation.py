@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 
-from evaluate import calculate_metrics, evaluate_checkpoint, run_evaluation
+from evaluate import calculate_metrics, evaluate_checkpoint, run_evaluation, write_metrics
 from main import main
 from utils.data_pipeline import load_dataset
 
@@ -31,6 +31,16 @@ class EvaluationTests(unittest.TestCase):
         for reference, prediction in (([], []), ([1, 2], [1]), ([1], [np.nan])):
             with self.subTest(prediction=prediction), self.assertRaises(ValueError):
                 calculate_metrics(reference, prediction)
+
+    def test_checkpoint_requires_saved_training_configuration(self):
+        with TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "model.pt"
+            for config in ({}, {"config": None}):
+                torch.save({**config, "epoch": 1, "model_state_dict": {}}, checkpoint)
+                with patch("evaluate.load_dataset") as load:
+                    with self.assertRaisesRegex(ValueError, "saved training configuration"):
+                        evaluate_checkpoint(checkpoint)
+                load.assert_not_called()
 
     def test_correction_reference_is_reconstructed_from_baseline(self):
         class ExampleDataset:
@@ -58,9 +68,36 @@ class EvaluationTests(unittest.TestCase):
     def test_training_rejects_unsupported_models_before_loading_data(self):
         cfg = OmegaConf.create({"train": {"model": "unsupported"}})
         with patch("main.load_dataset") as load:
-            with self.assertRaisesRegex(ValueError, "Choose mlp, cnn, or resnet18"):
+            with self.assertRaisesRegex(ValueError, "Choose mlp, cnn, resnet18, resnet34, or resnet50"):
                 main.__wrapped__(cfg)
         load.assert_not_called()
+
+    def test_training_passes_normalization_and_transfer_settings_to_models(self):
+        cfg = OmegaConf.load(Path(__file__).resolve().parents[1] / "configs/config.yaml")
+        cfg.train.transfer.pretrained = False
+        cfg.train.transfer.freeze_backbone = False
+        data = torch.zeros(2, 3, 32, 32)
+        labels = torch.zeros(2, 1)
+        constructors = {"mlp": "main.MLPRegressor", "cnn": "main.CNNRegressor",
+                        "resnet18": "models.resnet18.ResNet18Regressor",
+                        "resnet34": "models.resnet34.ResNet34Regressor",
+                        "resnet50": "models.resnet50.ResNet50Regressor"}
+        for name, constructor in constructors.items():
+            for normalize in ('none', 'temp', 'all'):
+                with self.subTest(model=name, normalize=normalize):
+                    cfg.train.model = name
+                    cfg.train.normalize = normalize
+                    with patch("main.load_dataset", return_value=(data, labels)), patch(
+                        constructor, side_effect=RuntimeError("constructor reached")
+                    ) as build, patch("torch.cuda.is_available", return_value=False):
+                        with self.assertRaisesRegex(RuntimeError, "constructor reached"):
+                            main.__wrapped__(cfg)
+                    self.assertEqual(build.call_args.kwargs["normalize"], normalize)
+                    if name.startswith("resnet"):
+                        self.assertFalse(build.call_args.kwargs["pretrained"])
+                        self.assertFalse(build.call_args.kwargs["freeze_backbone"])
+                        self.assertEqual(build.call_args.kwargs["freeze_conv1"],
+                                         cfg.train.transfer.freeze_conv1)
 
     def test_config_selects_all_or_single_checkpoint_and_baseline(self):
         with TemporaryDirectory() as directory:
@@ -71,7 +108,6 @@ class EvaluationTests(unittest.TestCase):
             cfg = OmegaConf.create({"evaluate": {
                 "root": directory, "split": "valid", "checkpoint": "all",
                 "name": None, "baseline": False, "output": str(root / "metrics.csv"),
-                "legacy_config": None,
             }})
             with patch("evaluate.evaluate_checkpoint", return_value=[{"kind": "model"}]) as evaluate:
                 rows = run_evaluation(cfg)
@@ -122,7 +158,8 @@ class EvaluationTests(unittest.TestCase):
             "dataset": {"root": "unused", "crop": "tomato", "model": "fcdensenet",
                         "image": "thermal", "mask": "both",
                         "interpolation": "nearest", "target": "correction"},
-            "train": {"model": "mlp", "batch_size": 2, "seed": 7},
+            "train": {"model": "mlp", "batch_size": 2, "seed": 7, "normalize": "none",
+                      "learning_rate": 0.001},
         })
         data = torch.zeros(2, 3, 2, 2)
         labels = torch.tensor([[2.], [2.]])
@@ -135,20 +172,50 @@ class EvaluationTests(unittest.TestCase):
             for include_baseline in (True, False):
                 with self.subTest(include_baseline=include_baseline), patch(
                     "evaluate.load_dataset", return_value=(data, labels, metadata)
-                ), patch("evaluate.MLPRegressor", return_value=ConstantModel()):
-                    # Saved config takes precedence over the optional legacy fallback.
+                ), patch("evaluate.MLPRegressor", return_value=ConstantModel()) as build:
                     rows = evaluate_checkpoint(
-                        checkpoint, config_path="unused-legacy-config.yaml",
+                        checkpoint,
                         output=Path(directory) / "metrics.csv",
                         include_baseline=include_baseline,
                     )
-                self.assertEqual(len(rows), 2 if include_baseline else 1)
-                self.assertEqual(rows[0]["kind"], "model")
-                self.assertEqual(rows[0]["rmse"], 0.)
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["kind"], "baseline" if include_baseline else "model")
+                self.assertEqual(rows[0]["rmse"], 2. if include_baseline else 0.)
                 self.assertEqual(rows[0]["seed"], 7)
                 if include_baseline:
-                    self.assertEqual(rows[1]["kind"], "baseline")
-                    self.assertEqual(rows[1]["rmse"], 2.)
+                    build.assert_not_called()
+                else:
+                    build.assert_called_once()
+
+
+    def test_result_column_selection_and_learning_rates(self):
+        cfg = OmegaConf.load(Path(__file__).resolve().parents[1] / "configs/config.yaml")
+        cfg.train.model = "resnet50"
+        cfg.train.learning_rate = 0.001
+        cfg.train.transfer.learning_rate_conv1 = 0.0001
+        required = ["epoch", "model", "crop", "seg model", "image"]
+        dataset_columns = ["mask", "interpolation", "target"]
+        train_columns = ["normalize", "conv1", "fc"]
+        with TemporaryDirectory() as directory:
+            for column in ("dataset", "train", "all"):
+                for frozen in (True, False):
+                    with self.subTest(column=column, frozen=frozen):
+                        cfg.train.transfer.freeze_conv1 = frozen
+                        rows = write_metrics(cfg, "valid", [1., 2.], [("model", [1., 2.])],
+                                             Path(directory) / f"{column}_{frozen}.csv", column=column)
+                        expected = required + (dataset_columns if column != "train" else [])
+                        expected += train_columns if column != "dataset" else []
+                        self.assertEqual(list(rows[0])[:len(expected)], expected)
+                        for name in dataset_columns:
+                            self.assertEqual(name in rows[0], column != "train")
+                        for name in train_columns:
+                            self.assertEqual(name in rows[0], column != "dataset")
+                        if column != "dataset":
+                            self.assertEqual(rows[0]["conv1"], 0 if frozen else 0.0001)
+                            self.assertEqual(rows[0]["fc"], 0.001)
+            with self.assertRaisesRegex(ValueError, "evaluate.column"):
+                write_metrics(cfg, "valid", [1.], [("model", [1.])],
+                              Path(directory) / "invalid.csv", column="invalid")
 
 
 if __name__ == "__main__":

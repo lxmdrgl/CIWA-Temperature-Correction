@@ -69,38 +69,56 @@ Train runs using the same splits and several seeds, for example:
 python main.py train.model=mlp train.seed=0
 python main.py train.model=cnn train.seed=0
 python main.py train.model=resnet18 train.learning_rate=0.0001
+python main.py train.model=resnet34 train.learning_rate=0.0001
+python main.py train.model=resnet50 train.learning_rate=0.0001
 ```
 
-ResNet-18 starts with torchvision's ImageNet weights and a new single-output
-regression layer. The first pretrained run downloads the weights (about 45 MB);
-later runs use the local cache. `train.resnet18.pretrained=false` trains from
+ResNet-18, ResNet-34, and ResNet-50 are separate model choices, each using
+torchvision's corresponding ImageNet weights and a new single-output regression
+layer. They share the `train.transfer` settings. The first pretrained run downloads
+the selected model's weights;
+later runs use the local cache. `train.transfer.pretrained=false` trains from
 scratch. Both direct and correction targets are supported.
 
 For thermal images, the first convolution supports temperature plus the selected
 mask channels. Pretrained RGB filters are summed into the temperature channel;
 mask weights start at zero and are learned during training.
 
-All three models (MLP, CNN, and ResNet-18) normalize thermal inputs with one
-temperature mean and standard deviation calculated from training pixels only.
-The same statistics are reused for validation and test images, preserving absolute
-temperature differences. Masks keep their 0–1 values. Target labels, baseline
-temperatures, and reference temperatures retain their original units. Existing
-BatchNorm layers remain in place.
+`dataset.mask` selects input channels: `none` uses temperature only; `hard` adds
+the hard mask; `soft` adds the probability mask; `both` adds hard and soft masks,
+in that order. The hard mask is still used to calculate the correction target and
+baseline even when it is excluded from the inputs.
+
+All models (MLP, CNN, and the three ResNet variants) support three input
+normalization methods through `train.normalize`:
+
+- `none`: pass all input channels through unchanged.
+- `temp` (default): standardize only the temperature channel; masks retain their
+  existing 0–1 values. For visual inputs, this mode leaves inputs unchanged.
+- `all`: standardize every input channel independently, including hard and soft
+  masks, using a separate mean and standard deviation for each channel.
+
+Statistics are calculated across training samples and spatial pixels only, then
+reused for validation, test, and inference. Standard deviations are clamped to
+at least `1e-6` to handle constant channels. Target labels, baseline temperatures,
+and reference temperatures retain their original units. Existing BatchNorm layers
+remain in place.
 
 Normalization statistics are saved inside the model checkpoint and restored
-automatically during evaluation. Older MLP/CNN checkpoints without these statistics
-continue to receive raw inputs. Existing ResNet-18 checkpoints retain their saved
-normalization. Retrain MLP/CNN models to use the new normalization. Visual input
-preprocessing for MLP/CNN is unchanged.
+automatically during evaluation. The saved `train.normalize` setting determines
+whether input normalization is enabled.
 
-For visual inputs, ResNet converts the loader's BGR images to RGB, scales by 255,
-and applies ImageNet normalization. Both input types keep the full image at the
-dataset's existing resolution; no center crop is applied.
+RGB normalization is not applied. Inputs keep the full image at the dataset's
+existing resolution; no center crop is applied.
 
 By default, all ResNet layers are fine-tuned. Set
-`train.resnet18.freeze_backbone=true` to train only the regression head and, for
-thermal inputs, the adapted input convolution. Frozen BatchNorm statistics remain
-fixed. Freezing requires pretrained weights. Evaluation creates the architecture
+`train.transfer.freeze_backbone=true` to freeze residual blocks and BatchNorm
+parameters/statistics while keeping the regression head trainable.
+`train.transfer.freeze_conv1` independently controls the first convolution:
+`false` trains it, and `true` freezes it, regardless of `freeze_backbone`.
+Trainable first-convolution weights use `train.transfer.learning_rate_conv1`;
+other trainable parameters use `train.learning_rate`.
+Freezing the backbone requires pretrained weights. Evaluation creates the architecture
 without downloading ImageNet weights, then restores the saved checkpoint.
 
 To evaluate trained checkpoints, edit the `evaluate` section in
@@ -114,7 +132,6 @@ evaluate:
   name: null
   baseline: true
   output: results/metrics.csv
-  legacy_config: null
 ```
 
 `checkpoint: all` evaluates every `.pt` file directly inside `root`, sorted by
@@ -122,12 +139,19 @@ filename. To evaluate one file, set `checkpoint: single` and
 `name: YOUR_MODEL.pt`. `name` is ignored in all mode. Paths are relative to the
 project root unless absolute.
 
-`baseline: true` includes an uncorrected hard-mask baseline row for each
-checkpoint, using that checkpoint's dataset settings. Set it to `false` to write
-only model rows. Baseline rows may repeat when checkpoints share dataset settings.
+`baseline: true` writes only uncorrected hard-mask baseline rows, using each
+checkpoint's dataset settings, and skips model inference. Set it to `false` to
+write only model rows. Baseline rows may repeat when checkpoints share dataset settings.
+
+`evaluate.column` selects optional CSV fields: `dataset` adds `mask`,
+`interpolation`, and `target`; `train` adds `normalize`, `conv1`, and `fc`;
+`all` includes both groups. `epoch`, `model`, `crop`, `seg model`, and `image`
+are always included, along with metrics, seed, split, sample count, kind, saved
+config, and checkpoint path. `conv1` is its saved learning rate, or zero when
+frozen (also zero for MLP/CNN); `fc` is the saved `train.learning_rate`.
 No checkpoints, a missing filename in single mode, or a missing file produces an error.
 
-New checkpoints supply their own training configuration and seed; the top-level
+Checkpoints supply their own training configuration and seed; the top-level
 `train` and `dataset` settings do not replace those saved settings. Compare
 configurations on `split: valid`, then use `split: test` for the final assessment.
 Metrics append to `evaluate.output`. Each row contains
@@ -136,11 +160,8 @@ Correction outputs are added to the hard-mask baseline before calculating metric
 against reference temperatures. Positive MBE means overestimation. R² is `nan`
 when the reference temperature is constant. Repeated evaluations append new rows.
 
-Older checkpoints without saved configuration require `evaluate.legacy_config`
-to point to a config matching their original training run. This fallback is ignored
-for checkpoints that contain their own config. When evaluating all files, every
-legacy checkpoint must match that fallback; otherwise evaluate them individually
-with the appropriate config.
+Evaluation requires checkpoints with their saved training configuration, including
+`train.normalize`, and matching model weights and normalization buffers.
 
 ## Returning to the project
 

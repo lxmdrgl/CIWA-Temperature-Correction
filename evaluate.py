@@ -40,49 +40,56 @@ def calculate_metrics(reference, prediction):
     }
 
 
-def evaluate_checkpoint(checkpoint_path, split="test", config_path=None,
-                        overrides=None, output="results/metrics.csv", include_baseline=True):
+def evaluate_checkpoint(checkpoint_path, split="test",
+                        overrides=None, output="results/metrics.csv", include_baseline=True,
+                        column="all"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint_path = Path(checkpoint_path).resolve()
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
 
     saved_config = checkpoint.get("config")
-    if saved_config is not None:
-        cfg = OmegaConf.create(saved_config)
-    elif config_path is not None:
-        cfg = OmegaConf.load(config_path)
-        print("Legacy checkpoint: ensure the supplied config matches its training run.")
-    else:
-        raise ValueError("Legacy checkpoint has no saved config. Set evaluate.legacy_config.")
+    if saved_config is None:
+        raise ValueError("Checkpoint must contain its saved training configuration.")
+    cfg = OmegaConf.create(saved_config)
     if overrides:
-        # Primarily useful to relocate the data root or configure legacy checkpoints.
-        if saved_config is not None:
-            allowed = {"dataset.root", "train.batch_size"}
-            if any(item.split("=", 1)[0] not in allowed for item in overrides):
-                raise ValueError(
-                    "Saved training settings must stay fixed during evaluation. "
-                    "Only dataset.root and train.batch_size may be overridden."
-                )
+        allowed = {"dataset.root", "train.batch_size"}
+        if any(item.split("=", 1)[0] not in allowed for item in overrides):
+            raise ValueError(
+                "Saved training settings must stay fixed during evaluation. "
+                "Only dataset.root and train.batch_size may be overridden."
+            )
         cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))
 
     cfg.dataset.root = to_absolute_path(cfg.dataset.root)
     data, labels, metadata = load_dataset(cfg, split, return_metadata=True)
+    baseline = metadata["baseline"].numpy().reshape(-1)
+    reference = metadata["reference"].numpy().reshape(-1)
+    if include_baseline:
+        return write_metrics(
+            cfg, split, reference, [("baseline", baseline)], output,
+            checkpoint_path=str(checkpoint_path), epoch=checkpoint["epoch"],
+            seed=cfg.train.seed, column=column,
+        )
     loader = create_loader(data, labels, cfg.train.batch_size, shuffle=False)
     state = checkpoint["model_state_dict"]
-    # Older MLP/CNN models have no normalization buffers and expect raw inputs.
-    normalized = "thermal_normalization_fitted" in state
+    normalized = cfg.train.normalize
     if cfg.train.model == "mlp":
         model = MLPRegressor(input_size=data[0].numel(), image=cfg.dataset.image,
-                             normalize=normalized)
+                             normalize=normalized, in_channels=data.shape[1])
     elif cfg.train.model == "cnn":
         model = CNNRegressor(in_channels=data.shape[1], image=cfg.dataset.image,
                              normalize=normalized)
-    elif cfg.train.model == "resnet18":
+    elif cfg.train.model in {"resnet18", "resnet34", "resnet50"}:
         from models.resnet18 import ResNet18Regressor
+        from models.resnet34 import ResNet34Regressor
+        from models.resnet50 import ResNet50Regressor
 
         # Normalization and trained weights are restored from the checkpoint.
-        model = ResNet18Regressor(
+        regressors = {"resnet18": ResNet18Regressor, "resnet34": ResNet34Regressor,
+                      "resnet50": ResNet50Regressor}
+        model = regressors[cfg.train.model](
             in_channels=data.shape[1], image=cfg.dataset.image, pretrained=False,
+            normalize=normalized,
         )
     else:
         raise ValueError(f"Invalid training model: {cfg.train.model}")
@@ -95,36 +102,39 @@ def evaluate_checkpoint(checkpoint_path, split="test", config_path=None,
         for inputs, _ in loader:
             predictions.append(model(inputs.to(device)).cpu().double())
     prediction = torch.cat(predictions).numpy().reshape(-1)
-    baseline = metadata["baseline"].numpy().reshape(-1)
-    reference = metadata["reference"].numpy().reshape(-1)
     if cfg.dataset.target == "correction":
         prediction = baseline + prediction
 
-    values = [("model", prediction)]
-    if include_baseline:
-        values.append(("baseline", baseline))
     return write_metrics(
-        cfg, split, reference, values,
+        cfg, split, reference, [("model", prediction)],
         output, checkpoint_path=str(checkpoint_path), epoch=checkpoint["epoch"],
-        seed=cfg.train.get("seed", "unknown") if saved_config is not None else "unknown",
+        seed=cfg.train.seed, column=column,
     )
 
 
 def write_metrics(cfg, split, reference, predictions, output,
-                  checkpoint_path="", epoch=0, seed="unknown"):
+                  checkpoint_path="", epoch=0, seed="unknown", column="all"):
+    if column not in {"dataset", "train", "all"}:
+        raise ValueError("evaluate.column must be dataset, train, or all")
     common = {
         "epoch": epoch,
         "model": cfg.train.model,
         "crop": cfg.dataset.crop,
         "seg model": cfg.dataset.model,
         "image": cfg.dataset.image,
-        "mask": cfg.dataset.mask,
-        "interpolation": cfg.dataset.interpolation,
-        "target": cfg.dataset.target,
-        "seed": seed,
-        "split": split,
-        "samples": len(reference),
     }
+    if column in {"dataset", "all"}:
+        common.update(mask=cfg.dataset.mask, interpolation=cfg.dataset.interpolation,
+                      target=cfg.dataset.target)
+    if column in {"train", "all"}:
+        common.update(
+            normalize=cfg.train.normalize,
+            conv1=(cfg.train.transfer.learning_rate_conv1
+                   if cfg.train.model in {"resnet18", "resnet34", "resnet50"}
+                   and not cfg.train.transfer.freeze_conv1 else 0),
+            fc=cfg.train.learning_rate,
+        )
+    common.update(seed=seed, split=split, samples=len(reference))
     rows = []
     for kind, values in predictions:
         metrics = calculate_metrics(reference, values)
@@ -159,6 +169,9 @@ def run_evaluation(cfg):
         raise ValueError("evaluate.split must be train, valid, or test")
     if not isinstance(settings.baseline, bool):
         raise ValueError("evaluate.baseline must be true or false")
+    column = settings.get("column", "all")
+    if column not in {"dataset", "train", "all"}:
+        raise ValueError("evaluate.column must be dataset, train, or all")
 
     root = Path(to_absolute_path(settings.root))
     if settings.checkpoint == "all":
@@ -176,15 +189,12 @@ def run_evaluation(cfg):
         raise ValueError("evaluate.checkpoint must be all or single")
 
     output = to_absolute_path(settings.get("output", "results/metrics.csv"))
-    legacy_config = settings.get("legacy_config")
-    if legacy_config is not None:
-        legacy_config = to_absolute_path(legacy_config)
     rows = []
     for checkpoint in checkpoints:
         print(f"Evaluating {checkpoint}", flush=True)
         rows.extend(evaluate_checkpoint(
-            checkpoint, split=settings.split, config_path=legacy_config,
-            output=output, include_baseline=settings.baseline,
+            checkpoint, split=settings.split,
+            output=output, include_baseline=settings.baseline, column=column,
         ))
     return rows
 

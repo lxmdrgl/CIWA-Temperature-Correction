@@ -7,12 +7,10 @@ from utils.dataset import TemperatureDataset
 def load_dataset(cfg, split="train", return_metadata=False):
     """Load float32 inputs (N, C, H, W) and regression targets (N, 1)."""
     mask = cfg.dataset.mask
-    if mask == "both":
-        mask = "all"
 
     if cfg.dataset.image not in {"thermal", "visual"}:
         raise ValueError(f"Invalid image type: {cfg.dataset.image}")
-    if mask not in {"all", "hard", "soft"}:
+    if mask not in {"none", "hard", "soft", "both"}:
         raise ValueError(f"Invalid mask: {mask}")
     if cfg.dataset.target not in {"direct", "correction"}:
         raise ValueError(f"Invalid target: {cfg.dataset.target}")

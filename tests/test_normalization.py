@@ -12,6 +12,8 @@ from models.cnn import CNNRegressor
 from models.mlp import MLPRegressor
 from models.normalization import TemperatureNormalizedRegressor
 from models.resnet18 import ResNet18Regressor
+from models.resnet34 import ResNet34Regressor
+from models.resnet50 import ResNet50Regressor
 
 
 class NormalizationTests(unittest.TestCase):
@@ -27,17 +29,21 @@ class NormalizationTests(unittest.TestCase):
             (MLPRegressor(self.data[0].numel()), "mlp"),
             (CNNRegressor(in_channels=3), "cnn"),
             (ResNet18Regressor(pretrained=False), "resnet18"),
+            (ResNet34Regressor(pretrained=False), "resnet34"),
+            (ResNet50Regressor(pretrained=False), "resnet50"),
         )
         expected = self.data.clone()
         expected[:, 0] = (expected[:, 0] - 15.) / 5.
         for model, name in models:
             with self.subTest(model=name):
                 model.fit_normalization(self.data)
-                self.assertEqual(model.thermal_mean.item(), 15.)
-                self.assertEqual(model.thermal_std.item(), 5.)
+                self.assertEqual(model.input_mean.item(), 15.)
+                self.assertEqual(model.input_std.item(), 5.)
                 first = {"mlp": lambda: model.linear_relu_stack[0],
                          "cnn": lambda: model.features[0],
-                         "resnet18": lambda: model.backbone.conv1}[name]()
+                         "resnet18": lambda: model.backbone.conv1,
+                         "resnet34": lambda: model.backbone.conv1,
+                         "resnet50": lambda: model.backbone.conv1}[name]()
                 observed = []
                 handle = first.register_forward_pre_hook(
                     lambda module, inputs: observed.append(inputs[0].detach().clone())
@@ -50,7 +56,7 @@ class NormalizationTests(unittest.TestCase):
 
     def test_invalid_temperatures_and_unfitted_normalization_are_rejected(self):
         model = TemperatureNormalizedRegressor()
-        with self.assertRaisesRegex(RuntimeError, "Fit thermal normalization"):
+        with self.assertRaisesRegex(RuntimeError, "Fit normalization"):
             model.normalize_inputs(self.data)
         for bad in (self.data[:0], torch.full_like(self.data, float("nan")),
                     torch.full_like(self.data, float("inf"))):
@@ -65,21 +71,60 @@ class NormalizationTests(unittest.TestCase):
             model.fit_normalization(self.data)
             torch.testing.assert_close(model.normalize_inputs(self.data), self.data)
 
-    def test_evaluation_restores_new_and_legacy_mlp_cnn_checkpoints(self):
+    def test_all_standardizes_each_channel_using_fixed_training_statistics(self):
+        for channels in (1, 2, 3):
+            with self.subTest(channels=channels):
+                train = self.data[:, :channels].clone()
+                if channels > 1:
+                    train[0, 1] = 0.
+                model = TemperatureNormalizedRegressor(normalize="all", in_channels=channels)
+                model.fit_normalization(train)
+                mean = train.mean(dim=(0, 2, 3), keepdim=True)
+                std = train.std(dim=(0, 2, 3), correction=0, keepdim=True).clamp_min(1e-6)
+                torch.testing.assert_close(model.input_mean, mean)
+                torch.testing.assert_close(model.input_std, std)
+                torch.testing.assert_close(model.normalize_inputs(train), (train - mean) / std)
+                # A different split must reuse these values, not fit its own statistics.
+                valid = train + 2.
+                torch.testing.assert_close(model.normalize_inputs(valid), (valid - mean) / std)
+                torch.testing.assert_close(model.input_mean, mean)
+
+    def test_none_returns_raw_inputs_without_fitting(self):
+        model = TemperatureNormalizedRegressor(normalize="none")
+        model.fit_normalization(self.data)
+        torch.testing.assert_close(model.normalize_inputs(self.data), self.data)
+        self.assertEqual(dict(model.named_buffers()), {})
+
+    def test_invalid_normalization_modes_are_rejected(self):
+        for mode in (True, False, None, "invalid"):
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, "none, temp, or all"):
+                TemperatureNormalizedRegressor(normalize=mode)
+
+    def test_evaluation_restores_each_models_configured_normalization(self):
         cfg = OmegaConf.create({
             "dataset": {"root": "unused", "crop": "tomato", "model": "fcdensenet",
                         "image": "thermal", "mask": "both",
                         "interpolation": "nearest", "target": "direct"},
-            "train": {"model": "mlp", "batch_size": 2, "seed": 0},
+            "train": {"model": "mlp", "batch_size": 2, "seed": 0, "learning_rate": 0.001,
+                      "transfer": {"freeze_conv1": False, "learning_rate_conv1": 0.0001}},
         })
         metadata = {"baseline": torch.tensor([[14.], [19.]]),
                     "reference": torch.tensor([[15.], [20.]])}
         with TemporaryDirectory() as directory, patch("torch.cuda.is_available", return_value=False):
-            for name in ("mlp", "cnn"):
-                for normalized in (False, True):
+            for name in ("mlp", "cnn", "resnet18", "resnet34", "resnet50"):
+                for normalized in ('none', 'temp', 'all'):
                     cfg.train.model = name
-                    model = (MLPRegressor(self.data[0].numel(), normalize=normalized)
-                             if name == "mlp" else CNNRegressor(in_channels=3, normalize=normalized))
+                    cfg.train.normalize = normalized
+                    if name == "mlp":
+                        model = MLPRegressor(self.data[0].numel(), normalize=normalized)
+                    elif name == "cnn":
+                        model = CNNRegressor(in_channels=3, normalize=normalized)
+                    else:
+                        regressors = {"resnet18": ResNet18Regressor,
+                                      "resnet34": ResNet34Regressor,
+                                      "resnet50": ResNet50Regressor}
+                        model = regressors[name](in_channels=3, pretrained=False,
+                                                 normalize=normalized)
                     model.fit_normalization(self.data)
                     model.eval()
                     with torch.inference_mode():
@@ -93,12 +138,14 @@ class NormalizationTests(unittest.TestCase):
                             with patch("evaluate.load_dataset", return_value=(
                                 self.data, torch.zeros(2, 1), metadata
                             )):
-                                rows = evaluate_checkpoint(checkpoint, output=Path(directory) / "metrics.csv")
+                                rows = evaluate_checkpoint(checkpoint, output=Path(directory) / "metrics.csv",
+                                                           include_baseline=False)
                             predicted = raw + metadata["baseline"].numpy().reshape(-1) if target == "correction" else raw
                             expected = calculate_metrics(metadata["reference"].numpy(), predicted)
                             for metric, value in expected.items():
                                 np.testing.assert_allclose(rows[0][metric], value, rtol=1e-6)
-                            self.assertEqual(rows[1]["mae"], 1.)
+                            self.assertEqual(len(rows), 1)
+                            self.assertEqual(rows[0]["kind"], "model")
 
 
 if __name__ == "__main__":

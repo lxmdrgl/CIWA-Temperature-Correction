@@ -9,20 +9,20 @@ dataset:
   model: fcdensenet
   # image: all, thermal, visual
   image: thermal
-  # mask: both, soft, hard
-  mask: both
+  # mask: both, soft, hard, none
+  mask: hard
   # interpolation: nearest, area
   interpolation: nearest
   # target: direct, correction
-  target: direct
+  target: correction
 
 train:
   seed: 0
-  # model: mlp, cnn, resnet18
-  model: mlp
+  # model: mlp, cnn, resnet18, resnet34, resnet50
+  model: resnet50
   # loss: mse, mae
   loss: mse
-  epochs: 100
+  epochs: 200
   batch_size: 16
   shuffle: true
   learning_rate: 0.001
@@ -30,30 +30,39 @@ train:
   patience: 15
   # optimizer: adam, adamw, sgd 
   optimizer: adamw
-  # ResNet-18 settings; unused by mlp and cnn
-  resnet18:
+  # normalize: none, temp, all
+  normalize: temp
+  # Transfer learning settings shared by all ResNet models
+  transfer:
     pretrained: true
-    # Train only the regression head and thermal input convolution when true
-    freeze_backbone: false
+    # Freeze residual blocks and BatchNorm; the regression head stays trainable
+    freeze_backbone: true
+    freeze_conv1: false
+    # Applied only when conv1 is trainable; other layers use train.learning_rate
+    learning_rate_conv1: 0.0001
+  # name: dataset, train, all
+  name: all
+  output: checkpoints/all
 
 visualize:
   # split: train, valid, test
   split: test
   index: 0
+  output: visualize
 
 evaluate:
-  root: checkpoints
+  root: checkpoints/all
   # split: train, valid, test
-  split: test
+  split: valid
   # checkpoint: all, single
   checkpoint: single
   # Filename within root; required only when checkpoint is single
-  name:  resnet18_tomato_fcdensenet_thermal_both_nearest_correction_mse_seed0_val0.5401_2026-10-21_13-19-09.pt
-  # Include a hard-mask baseline row for each checkpoint's dataset settings
-  baseline: true
-  output: results/resnet18.csv
-  # Matching training config for old checkpoints without a saved config
-  legacy_config: null
+  name: mlp_tomato_frrna_thermal_none_nearest_correction_temp_fc0.001_cv0_mse_seed0_val1.2498_2026-10-22_04-37-42.pt
+  # true: baseline rows only; false: model rows only
+  baseline: false
+  # column: dataset, train, all
+  column: all
+  output: results/metrics_all.csv
 
 hydra:
   run:

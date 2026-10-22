@@ -5,22 +5,28 @@ from unittest.mock import patch
 
 import torch
 from omegaconf import OmegaConf
-from torchvision.models import resnet18
+from torchvision.models import resnet18, resnet34, resnet50
 
 from evaluate import evaluate_checkpoint
 from models.resnet18 import ResNet18Regressor
+from models.resnet34 import ResNet34Regressor
+from models.resnet50 import ResNet50Regressor
 
 
 class ResNet18Tests(unittest.TestCase):
+    model_type = ResNet18Regressor
+    model_name = "resnet18"
+    builder = staticmethod(resnet18)
+
     def test_thermal_normalization_preserves_masks_and_temperature_offsets(self):
-        model = ResNet18Regressor(in_channels=3, pretrained=False)
+        model = self.model_type(in_channels=3, pretrained=False)
         train = torch.zeros(2, 3, 4, 4)
         train[0, 0] = 10.
         train[1, 0] = 20.
         train[:, 1:] = 0.75
         model.fit_normalization(train)
-        self.assertEqual(model.thermal_mean.item(), 15.)
-        self.assertEqual(model.thermal_std.item(), 5.)
+        self.assertEqual(model.input_mean.item(), 15.)
+        self.assertEqual(model.input_std.item(), 5.)
         model.backbone = torch.nn.Identity()
         normalized = model(train)
         torch.testing.assert_close(normalized[:, 1:], train[:, 1:])
@@ -29,19 +35,18 @@ class ResNet18Tests(unittest.TestCase):
         shifted[:, 0] += 5.
         torch.testing.assert_close(model(shifted)[:, 0], normalized[:, 0] + 1.)
 
-    def test_visual_input_is_converted_from_bgr_and_normalized(self):
-        model = ResNet18Regressor(image="visual", pretrained=False)
+    def test_visual_input_is_unchanged(self):
+        model = self.model_type(image="visual", pretrained=False)
         model.backbone = torch.nn.Identity()
         bgr = torch.tensor([0., 127.5, 255.]).view(1, 3, 1, 1)
-        expected = (torch.tensor([1., 0.5, 0.]).view(1, 3, 1, 1)
-                    - model.rgb_mean) / model.rgb_std
-        torch.testing.assert_close(model(bgr), expected)
+        torch.testing.assert_close(model(bgr), bgr)
 
     def test_pretrained_thermal_adaptation_and_frozen_batchnorm(self):
-        backbone = resnet18(weights=None)
+        backbone = self.builder(weights=None)
         rgb_weights = backbone.conv1.weight.detach().clone()
-        with patch("models.resnet18.resnet18", return_value=backbone):
-            model = ResNet18Regressor(in_channels=2, pretrained=True, freeze_backbone=True)
+        with patch(f"models.{self.model_name}.{self.model_name}", return_value=backbone) as build:
+            model = self.model_type(in_channels=2, pretrained=True, freeze_backbone=True)
+        self.assertIsNotNone(build.call_args.kwargs["weights"])
         torch.testing.assert_close(model.backbone.conv1.weight[:, :1],
                                    rgb_weights.sum(dim=1, keepdim=True))
         self.assertEqual(torch.count_nonzero(model.backbone.conv1.weight[:, 1:]).item(), 0)
@@ -53,14 +58,42 @@ class ResNet18Tests(unittest.TestCase):
         self.assertFalse(model.backbone.layer4[0].conv1.weight.requires_grad)
 
     def test_unfitted_thermal_inputs_are_rejected(self):
-        model = ResNet18Regressor(in_channels=1, pretrained=False)
-        with self.assertRaisesRegex(RuntimeError, "Fit thermal normalization"):
+        model = self.model_type(in_channels=1, pretrained=False)
+        with self.assertRaisesRegex(RuntimeError, "Fit normalization"):
             model(torch.zeros(2, 1, 32, 32))
         model.fit_normalization(torch.ones(2, 1, 32, 32))
-        self.assertGreater(model.thermal_std.item(), 0.)
+        self.assertGreater(model.input_std.item(), 0.)
+
+    def test_conv1_freezing_and_optimizer_learning_rates_are_independent(self):
+        for freeze_backbone in (False, True):
+            for freeze_conv1 in (False, True):
+                with self.subTest(backbone=freeze_backbone, conv1=freeze_conv1):
+                    with patch(f"models.{self.model_name}.{self.model_name}",
+                               return_value=self.builder(weights=None)):
+                        model = self.model_type(pretrained=True, freeze_backbone=freeze_backbone,
+                                                freeze_conv1=freeze_conv1, normalize="none")
+                    model.train()
+                    self.assertEqual(model.backbone.conv1.weight.requires_grad, not freeze_conv1)
+                    self.assertEqual(model.backbone.layer1[0].conv1.weight.requires_grad,
+                                     not freeze_backbone)
+                    self.assertEqual(model.backbone.bn1.training, not freeze_backbone)
+                    optimizer = torch.optim.SGD(model.optimizer_parameter_groups(0.0001), lr=0.01)
+                    grouped = [p for group in optimizer.param_groups for p in group["params"]]
+                    self.assertEqual(len(grouped), len({id(p) for p in grouped}))
+                    self.assertEqual({id(p) for p in grouped},
+                                     {id(p) for p in model.parameters() if p.requires_grad})
+                    conv = model.backbone.conv1.weight
+                    head = model.backbone.fc.weight
+                    before_conv, before_head = conv.detach().clone(), head.detach().clone()
+                    if conv.requires_grad:
+                        conv.grad = torch.ones_like(conv)
+                    head.grad = torch.ones_like(head)
+                    optimizer.step()
+                    torch.testing.assert_close(conv, before_conv if freeze_conv1 else before_conv - 0.0001)
+                    torch.testing.assert_close(head, before_head - 0.01)
 
     def test_saved_normalization_is_used_in_evaluation_for_both_targets(self):
-        model = ResNet18Regressor(in_channels=3, pretrained=False)
+        model = self.model_type(in_channels=3, pretrained=False)
         data = torch.zeros(2, 3, 32, 32)
         data[0, 0] = 10.
         data[1, 0] = 20.
@@ -74,27 +107,44 @@ class ResNet18Tests(unittest.TestCase):
             "dataset": {"root": "unused", "crop": "tomato", "model": "fcdensenet",
                         "image": "thermal", "mask": "both",
                         "interpolation": "nearest", "target": "correction"},
-            "train": {"model": "resnet18", "batch_size": 2, "seed": 0},
+            "train": {"model": self.model_name, "batch_size": 2, "seed": 0, "normalize": "temp",
+                      "learning_rate": 0.001,
+                      "transfer": {"freeze_conv1": True, "learning_rate_conv1": 0.0001}},
         })
         with TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "resnet18.pt"
             for target in ("direct", "correction"):
                 cfg.dataset.target = target
+                state = model.state_dict()
                 torch.save({"config": OmegaConf.to_container(cfg), "epoch": 1,
-                            "model_state_dict": model.state_dict()}, checkpoint)
+                            "model_state_dict": state}, checkpoint)
                 with patch("evaluate.load_dataset", return_value=(data, torch.zeros(2, 1), metadata)), patch(
                     "torch.hub.load_state_dict_from_url", side_effect=AssertionError("Unexpected download")
                 ):
-                    rows = evaluate_checkpoint(checkpoint, output=Path(directory) / "metrics.csv")
-                self.assertEqual(rows[0]["model"], "resnet18")
+                    rows = evaluate_checkpoint(checkpoint, output=Path(directory) / "metrics.csv",
+                                               include_baseline=False)
+                self.assertEqual(rows[0]["model"], self.model_name)
                 self.assertEqual(rows[0]["mae"], 0. if target == "correction" else 17.5)
-                self.assertEqual(rows[1]["kind"], "baseline")
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["kind"], "model")
                 self.assertEqual(list(rows[0])[-2:], ["config", "checkpoint"])
-            restored = ResNet18Regressor(pretrained=False)
+            restored = self.model_type(pretrained=False)
             restored.load_state_dict(torch.load(checkpoint, weights_only=True)["model_state_dict"])
-            self.assertEqual(restored.thermal_mean.item(), 15.)
-            self.assertEqual(restored.thermal_std.item(), 5.)
-            self.assertTrue(restored.thermal_normalization_fitted.item())
+            self.assertEqual(restored.input_mean.item(), 15.)
+            self.assertEqual(restored.input_std.item(), 5.)
+            self.assertTrue(restored.normalization_fitted.item())
+
+
+class ResNet34Tests(ResNet18Tests):
+    model_type = ResNet34Regressor
+    model_name = "resnet34"
+    builder = staticmethod(resnet34)
+
+
+class ResNet50Tests(ResNet18Tests):
+    model_type = ResNet50Regressor
+    model_name = "resnet50"
+    builder = staticmethod(resnet50)
 
 
 if __name__ == "__main__":

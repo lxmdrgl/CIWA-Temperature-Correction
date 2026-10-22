@@ -58,12 +58,12 @@ def evaluate_model(model, test_loader, criterion, device):
 
     return epoch_loss
 
-# saves model to folder: checkpoints/name.pt
-def save_model(model, optimizer, epoch, train_loss, val_loss, test_loss, name, config=None):
+# Saves the checkpoint and learning curve under the configured output directory.
+def save_model(model, optimizer, epoch, train_loss, val_loss, test_loss, name, output, config=None):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     filename = f"{name}_val{min(val_loss):.4f}_{timestamp}.pt" 
     
-    save_path = os.path.join("checkpoints", filename)
+    save_path = os.path.join(output, filename)
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
     checkpoint = {

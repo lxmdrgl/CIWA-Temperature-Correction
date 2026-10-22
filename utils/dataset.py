@@ -1,12 +1,14 @@
 from pathlib import Path
 
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 import numpy as np
 import cv2
 
 class TemperatureDataset(Dataset):
     def __init__(self, root, split, crop, model, image, mask, interpolation, target):
+        if mask not in {"none", "hard", "soft", "both"}:
+            raise ValueError("mask must be none, hard, soft, or both")
         self.root = Path(root)
         self.split = split
         self.crop = crop
@@ -28,6 +30,11 @@ class TemperatureDataset(Dataset):
         return len(self.thermal_images)
 
     def __getitem__(self, index):
+        data, target, _ = self.get_sample(index)
+        return data, target
+
+    def get_sample(self, index):
+        """Return inputs, target, and thermal label mask/baseline for visualization."""
         thermal_image = self.thermal_images[index]
         height, width = thermal_image.shape
         size = (width, height)
@@ -47,21 +54,16 @@ class TemperatureDataset(Dataset):
             size,
             interpolation=interpolation_method,
         )
-        thermal_soft_mask = cv2.resize(
-            self.visual_soft_masks[index].astype(np.float32),
-            size,
-            interpolation=interpolation_method,
-        )
-
-        # if mask == all: (W, H, 3)
-        # if mask == hard: (W, H, 2)
-        # if mask == soft: (W, H, 2)
-        thermal_data = np.stack(
-            [self.thermal_images[index]]
-            + ([thermal_hard_mask] if self.mask in {"all", "hard"} else [])
-            + ([thermal_soft_mask] if self.mask in {"all", "soft"} else []),
-            axis=-1,
-        )
+        # Input order: temperature, optional hard mask, optional soft mask (H, W, C).
+        channels = [thermal_image]
+        if self.mask in {"hard", "both"}:
+            channels.append(thermal_hard_mask)
+        if self.mask in {"soft", "both"}:
+            channels.append(cv2.resize(
+                self.visual_soft_masks[index].astype(np.float32), size,
+                interpolation=interpolation_method,
+            ))
+        thermal_data = np.stack(channels, axis=-1)
 
         weight_sum_label = thermal_label_mask.sum()
         weight_sum_hard = thermal_hard_mask.sum()
@@ -84,10 +86,14 @@ class TemperatureDataset(Dataset):
             thermal_target = thermal_label_target - thermal_hard_target
 
         if self.image == "thermal":
-            return thermal_data, thermal_target
+            data = thermal_data
         elif self.image == "visual":
             # (W, H, 3)
-            return self.visual_images[index], thermal_target
+            data = self.visual_images[index]
+        return data, thermal_target, {
+            "thermal_label_mask": thermal_label_mask,
+            "baseline": thermal_hard_target,
+        }
         
 
     def get_data(self):
