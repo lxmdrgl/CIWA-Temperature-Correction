@@ -2,6 +2,7 @@
 data/
 checkpoints/
 old/
+ciwa-full-split/
 
 # environment
 .venv/
