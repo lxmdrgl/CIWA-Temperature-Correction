@@ -64,6 +64,46 @@ class ResNet18Tests(unittest.TestCase):
         model.fit_normalization(torch.ones(2, 1, 32, 32))
         self.assertGreater(model.input_std.item(), 0.)
 
+    def test_mask_initialization_preserves_temperature_and_default_weights(self):
+        for pretrained in (False, True):
+            for channels in (1, 2, 3):
+                with self.subTest(pretrained=pretrained, channels=channels):
+                    initial_weights = {}
+                    for mask_init in ("default", "zero"):
+                        torch.manual_seed(42)
+                        backbone = self.builder(weights=None)
+                        rgb_weights = backbone.conv1.weight.detach().clone()
+                        with patch(f"models.{self.model_name}.{self.model_name}",
+                                   return_value=backbone):
+                            model = self.model_type(in_channels=channels, pretrained=pretrained,
+                                                    mask_init=mask_init)
+                        initial_weights[mask_init] = model.backbone.conv1.weight.detach().clone()
+                        if pretrained:
+                            torch.testing.assert_close(initial_weights[mask_init][:, :1],
+                                                       rgb_weights.sum(dim=1, keepdim=True))
+                    torch.testing.assert_close(initial_weights["zero"][:, :1],
+                                               initial_weights["default"][:, :1])
+                    self.assertEqual(torch.count_nonzero(initial_weights["zero"][:, 1:]).item(), 0)
+                    if channels > 1:
+                        self.assertGreater(torch.count_nonzero(initial_weights["default"][:, 1:]).item(), 0)
+
+    def test_invalid_mask_initialization_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "mask_init"):
+            self.model_type(pretrained=False, mask_init="invalid")
+
+    def test_thermal_mapping_transfers_weights_to_every_channel(self):
+        for channels in (1, 2, 3):
+            for mask_init in ("zero", "default"):
+                with self.subTest(channels=channels, mask_init=mask_init):
+                    backbone = self.builder(weights=None)
+                    rgb = backbone.conv1.weight.detach().clone()
+                    with patch(f"models.{self.model_name}.{self.model_name}", return_value=backbone):
+                        model = self.model_type(in_channels=channels, pretrained=True,
+                                                mapping="thermal", mask_init=mask_init)
+                    expected = rgb.sum(dim=1, keepdim=True).expand(-1, channels, -1, -1) / channels
+                    torch.testing.assert_close(model.backbone.conv1.weight, expected)
+                    self.assertEqual(model.input_mean.shape[1], channels)
+
     def test_conv1_freezing_and_optimizer_learning_rates_are_independent(self):
         for freeze_backbone in (False, True):
             for freeze_conv1 in (False, True):
@@ -108,15 +148,19 @@ class ResNet18Tests(unittest.TestCase):
                         "image": "thermal", "mask": "both",
                         "interpolation": "nearest", "target": "correction"},
             "train": {"model": self.model_name, "batch_size": 2, "seed": 0, "normalize": "temp",
-                      "learning_rate": 0.001,
-                      "transfer": {"freeze_conv1": True, "learning_rate_conv1": 0.0001}},
+                      "learning_rate": 0.001},
+            "transfer": {"freeze_conv1": True, "lr_conv1": 0.0001},
         })
         with TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "resnet18.pt"
             for target in ("direct", "correction"):
                 cfg.dataset.target = target
                 state = model.state_dict()
-                torch.save({"config": OmegaConf.to_container(cfg), "epoch": 1,
+                saved_config = OmegaConf.to_container(cfg)
+                if target == "correction":
+                    # Existing checkpoints must still evaluate after the config move.
+                    saved_config["train"]["transfer"] = saved_config.pop("transfer")
+                torch.save({"config": saved_config, "epoch": 1,
                             "model_state_dict": state}, checkpoint)
                 with patch("evaluate.load_dataset", return_value=(data, torch.zeros(2, 1), metadata)), patch(
                     "torch.hub.load_state_dict_from_url", side_effect=AssertionError("Unexpected download")

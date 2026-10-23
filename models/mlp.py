@@ -5,8 +5,8 @@ from models.normalization import TemperatureNormalizedRegressor
 class MLPRegressor(TemperatureNormalizedRegressor):
 
     def __init__(self, input_size, hidden_size=256, num_outputs=1, dropout=0.2,
-                 image="thermal", normalize="temp", in_channels=3):
-        super().__init__(image=image, normalize=normalize, in_channels=in_channels)
+                 image="thermal", normalize="temp", in_channels=3, mapping="original"):
+        super().__init__(image=image, normalize=normalize, in_channels=in_channels, mapping=mapping)
 
         self.input_size = input_size
         self.hidden_size = hidden_size

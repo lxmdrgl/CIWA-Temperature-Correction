@@ -52,10 +52,11 @@ def main(cfg: DictConfig) -> None:
 
     if cfg.train.model == "mlp":
         model = MLPRegressor(input_size=train_data[0].numel(), image=cfg.dataset.image,
-                             normalize=cfg.train.normalize, in_channels=train_data.shape[1])
+                             normalize=cfg.train.normalize, in_channels=train_data.shape[1],
+                             mapping=cfg.dataset.get("mapping", "original"))
     elif cfg.train.model == "cnn":
         model = CNNRegressor(in_channels=train_data.shape[1], image=cfg.dataset.image,
-                             normalize=cfg.train.normalize)
+                             normalize=cfg.train.normalize, mapping=cfg.dataset.get("mapping", "original"))
     elif cfg.train.model in {"resnet18", "resnet34", "resnet50"}:
         from models.resnet18 import ResNet18Regressor
         from models.resnet34 import ResNet34Regressor
@@ -65,10 +66,12 @@ def main(cfg: DictConfig) -> None:
                       "resnet50": ResNet50Regressor}
         model = regressors[cfg.train.model](
             in_channels=train_data.shape[1], image=cfg.dataset.image,
-            pretrained=cfg.train.transfer.pretrained,
-            freeze_backbone=cfg.train.transfer.freeze_backbone,
-            freeze_conv1=cfg.train.transfer.freeze_conv1,
+            pretrained=cfg.transfer.pretrained,
+            freeze_backbone=cfg.transfer.freeze_backbone,
+            freeze_conv1=cfg.transfer.freeze_conv1,
+            mask_init=cfg.transfer.get("mask_init", "zero"),
             normalize=cfg.train.normalize,
+            mapping=cfg.dataset.get("mapping", "original"),
         )
     model.fit_normalization(train_data)
     model = model.to(device)
@@ -82,7 +85,7 @@ def main(cfg: DictConfig) -> None:
                   "sgd": torch.optim.SGD}
     if cfg.train.optimizer not in optimizers:
         raise ValueError(f"Invalid optimizer: {cfg.train.optimizer}")
-    parameters = (model.optimizer_parameter_groups(cfg.train.transfer.learning_rate_conv1)
+    parameters = (model.optimizer_parameter_groups(cfg.transfer.lr_conv1)
                   if cfg.train.model in {"resnet18", "resnet34", "resnet50"}
                   else (parameter for parameter in model.parameters() if parameter.requires_grad))
     optimizer = optimizers[cfg.train.optimizer](
@@ -127,9 +130,9 @@ def main(cfg: DictConfig) -> None:
     model.load_state_dict(best_state)
     optimizer.load_state_dict(best_optimizer)
     print(f"Best epoch: {best_epoch}. Validation {cfg.train.loss}: {best_loss:.4f}")
-    conv1_lr = (cfg.train.transfer.learning_rate_conv1
+    conv1_lr = (cfg.transfer.lr_conv1
                 if cfg.train.model in {"resnet18", "resnet34", "resnet50"}
-                and not cfg.train.transfer.freeze_conv1 else 0)
+                and not cfg.transfer.freeze_conv1 else 0)
     if cfg.train.name == "dataset":
         name = (
             f"{cfg.train.model}_{cfg.dataset.crop}_{cfg.dataset.model}_"
@@ -140,17 +143,21 @@ def main(cfg: DictConfig) -> None:
         name = (
             f"{cfg.train.model}_{cfg.dataset.crop}_{cfg.dataset.model}_"
             f"{cfg.dataset.image}_fc{cfg.train.learning_rate}_"
-            f"cv{conv1_lr}_{cfg.train.loss}_seed{seed}"
+            f"cv{conv1_lr}_{cfg.transfer.mask_init}_"
+            f"{cfg.train.loss}_seed{seed}"
         )
     elif cfg.train.name == "all":
         name = (
             f"{cfg.train.model}_{cfg.dataset.crop}_{cfg.dataset.model}_"
             f"{cfg.dataset.image}_{cfg.dataset.mask}_{cfg.dataset.interpolation}_"
             f"{cfg.dataset.target}_{cfg.train.normalize}_fc{cfg.train.learning_rate}_"
-            f"cv{conv1_lr}_{cfg.train.loss}_seed{seed}"
+            f"cv{conv1_lr}_{cfg.transfer.mask_init}_"
+            f"{cfg.train.loss}_seed{seed}"
         )
     else:
         raise ValueError(f"Invalid train name: {cfg.train.name}. Choose dataset, train, or all.")
+    if cfg.dataset.image == "thermal" and cfg.dataset.get("mapping", "original") == "thermal":
+        name += f"_mapping-thermal_fill{cfg.dataset.get('mask_fill', 0.0)}"
     save_path = save_model(
         model, optimizer, best_epoch, train_losses, valid_losses, test_losses, name,
         to_absolute_path(cfg.train.output),

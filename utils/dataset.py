@@ -6,9 +6,14 @@ import numpy as np
 import cv2
 
 class TemperatureDataset(Dataset):
-    def __init__(self, root, split, crop, model, image, mask, interpolation, target):
+    def __init__(self, root, split, crop, model, image, mask, interpolation, target,
+                 mapping="original", mask_fill=0.0):
         if mask not in {"none", "hard", "soft", "both"}:
             raise ValueError("mask must be none, hard, soft, or both")
+        if mapping not in {"original", "thermal"}:
+            raise ValueError("mapping must be original or thermal")
+        if not np.isfinite(mask_fill):
+            raise ValueError("mask_fill must be finite")
         self.root = Path(root)
         self.split = split
         self.crop = crop
@@ -17,6 +22,8 @@ class TemperatureDataset(Dataset):
         self.mask = mask
         self.interpolation = interpolation
         self.target = target
+        self.mapping = mapping
+        self.mask_fill = mask_fill
 
         (
             self.thermal_images,
@@ -63,6 +70,9 @@ class TemperatureDataset(Dataset):
                 self.visual_soft_masks[index].astype(np.float32), size,
                 interpolation=interpolation_method,
             ))
+        if self.mapping == "thermal":
+            channels[1:] = [np.where(mask > 0, thermal_image * mask, self.mask_fill)
+                            for mask in channels[1:]]
         thermal_data = np.stack(channels, axis=-1)
 
         weight_sum_label = thermal_label_mask.sum()

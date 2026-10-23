@@ -74,8 +74,8 @@ class EvaluationTests(unittest.TestCase):
 
     def test_training_passes_normalization_and_transfer_settings_to_models(self):
         cfg = OmegaConf.load(Path(__file__).resolve().parents[1] / "configs/config.yaml")
-        cfg.train.transfer.pretrained = False
-        cfg.train.transfer.freeze_backbone = False
+        cfg.transfer.pretrained = False
+        cfg.transfer.freeze_backbone = False
         data = torch.zeros(2, 3, 32, 32)
         labels = torch.zeros(2, 1)
         constructors = {"mlp": "main.MLPRegressor", "cnn": "main.CNNRegressor",
@@ -93,11 +93,14 @@ class EvaluationTests(unittest.TestCase):
                         with self.assertRaisesRegex(RuntimeError, "constructor reached"):
                             main.__wrapped__(cfg)
                     self.assertEqual(build.call_args.kwargs["normalize"], normalize)
+                    self.assertEqual(build.call_args.kwargs["mapping"], cfg.dataset.mapping)
                     if name.startswith("resnet"):
                         self.assertFalse(build.call_args.kwargs["pretrained"])
                         self.assertFalse(build.call_args.kwargs["freeze_backbone"])
                         self.assertEqual(build.call_args.kwargs["freeze_conv1"],
-                                         cfg.train.transfer.freeze_conv1)
+                                         cfg.transfer.freeze_conv1)
+                        self.assertEqual(build.call_args.kwargs["mask_init"],
+                                         cfg.transfer.mask_init)
 
     def test_config_selects_all_or_single_checkpoint_and_baseline(self):
         with TemporaryDirectory() as directory:
@@ -192,15 +195,16 @@ class EvaluationTests(unittest.TestCase):
         cfg = OmegaConf.load(Path(__file__).resolve().parents[1] / "configs/config.yaml")
         cfg.train.model = "resnet50"
         cfg.train.learning_rate = 0.001
-        cfg.train.transfer.learning_rate_conv1 = 0.0001
+        cfg.transfer.lr_conv1 = 0.0001
+        cfg.transfer.mask_init = "default"
         required = ["epoch", "model", "crop", "seg model", "image"]
-        dataset_columns = ["mask", "interpolation", "target"]
-        train_columns = ["normalize", "conv1", "fc"]
+        dataset_columns = ["mask", "interpolation", "target", "mapping", "mask_fill"]
+        train_columns = ["normalize", "mask_init", "conv1", "fc"]
         with TemporaryDirectory() as directory:
             for column in ("dataset", "train", "all"):
                 for frozen in (True, False):
                     with self.subTest(column=column, frozen=frozen):
-                        cfg.train.transfer.freeze_conv1 = frozen
+                        cfg.transfer.freeze_conv1 = frozen
                         rows = write_metrics(cfg, "valid", [1., 2.], [("model", [1., 2.])],
                                              Path(directory) / f"{column}_{frozen}.csv", column=column)
                         expected = required + (dataset_columns if column != "train" else [])
@@ -211,6 +215,7 @@ class EvaluationTests(unittest.TestCase):
                         for name in train_columns:
                             self.assertEqual(name in rows[0], column != "dataset")
                         if column != "dataset":
+                            self.assertEqual(rows[0]["mask_init"], "default")
                             self.assertEqual(rows[0]["conv1"], 0 if frozen else 0.0001)
                             self.assertEqual(rows[0]["fc"], 0.001)
             with self.assertRaisesRegex(ValueError, "evaluate.column"):

@@ -75,26 +75,45 @@ python main.py train.model=resnet50 train.learning_rate=0.0001
 
 ResNet-18, ResNet-34, and ResNet-50 are separate model choices, each using
 torchvision's corresponding ImageNet weights and a new single-output regression
-layer. They share the `train.transfer` settings. The first pretrained run downloads
+layer. They share the `transfer` settings. The first pretrained run downloads
 the selected model's weights;
-later runs use the local cache. `train.transfer.pretrained=false` trains from
+later runs use the local cache. `transfer.pretrained=false` trains from
 scratch. Both direct and correction targets are supported.
 
 For thermal images, the first convolution supports temperature plus the selected
-mask channels. Pretrained RGB filters are summed into the temperature channel;
-mask weights start at zero and are learned during training.
+mask channels. With `dataset.mapping=original`, pretrained RGB filters are summed into the temperature channel;
+`transfer.mask_init=zero` starts mask weights at zero (the default), while
+`transfer.mask_init=default` keeps PyTorch's default random initialization
+for those weights. This option also applies when training from scratch; it has no
+effect on temperature-only or visual inputs. Mask weights are learned when
+`transfer.freeze_conv1=false`.
 
 `dataset.mask` selects input channels: `none` uses temperature only; `hard` adds
 the hard mask; `soft` adds the probability mask; `both` adds hard and soft masks,
 in that order. The hard mask is still used to calculate the correction target and
 baseline even when it is excluded from the inputs.
 
+`dataset.mapping=original` preserves the existing inputs. With
+`dataset.mapping=thermal`, inputs become temperature followed by each selected
+mask multiplied by temperature: `[T, T * hard, T * soft]` for `mask=both`.
+Pixels where a mask is zero use `dataset.mask_fill` (default `0.0` °C).
+Soft masks retain their probability weighting; only zero-mask pixels use the fill.
+The first temperature channel, target labels, and baseline calculations are unchanged.
+Visual inputs are unchanged by mapping.
+
+For thermal mapping, every input kernel is initialized to the mean of the RGB
+kernels scaled by `3/C`, equivalently their sum divided by the input channel count
+`C`. This same-scaled adaptation applies to one, two, and three channels because
+none corresponds to an RGB color band. `transfer.mask_init` is ignored in thermal mapping; without pretraining,
+all input-channel weights retain PyTorch's default initialization.
+
 All models (MLP, CNN, and the three ResNet variants) support three input
 normalization methods through `train.normalize`:
 
 - `none`: pass all input channels through unchanged.
-- `temp` (default): standardize only the temperature channel; masks retain their
-  existing 0–1 values. For visual inputs, this mode leaves inputs unchanged.
+- `temp` (default): with original mapping, standardize only the temperature channel;
+  masks retain their existing 0–1 values. With thermal mapping, standardize every
+  channel independently, including fill pixels. For visual inputs, leave inputs unchanged.
 - `all`: standardize every input channel independently, including hard and soft
   masks, using a separate mean and standard deviation for each channel.
 
@@ -112,11 +131,11 @@ RGB normalization is not applied. Inputs keep the full image at the dataset's
 existing resolution; no center crop is applied.
 
 By default, all ResNet layers are fine-tuned. Set
-`train.transfer.freeze_backbone=true` to freeze residual blocks and BatchNorm
+`transfer.freeze_backbone=true` to freeze residual blocks and BatchNorm
 parameters/statistics while keeping the regression head trainable.
-`train.transfer.freeze_conv1` independently controls the first convolution:
+`transfer.freeze_conv1` independently controls the first convolution:
 `false` trains it, and `true` freezes it, regardless of `freeze_backbone`.
-Trainable first-convolution weights use `train.transfer.learning_rate_conv1`;
+Trainable first-convolution weights use `transfer.lr_conv1`;
 other trainable parameters use `train.learning_rate`.
 Freezing the backbone requires pretrained weights. Evaluation creates the architecture
 without downloading ImageNet weights, then restores the saved checkpoint.
@@ -144,11 +163,15 @@ checkpoint's dataset settings, and skips model inference. Set it to `false` to
 write only model rows. Baseline rows may repeat when checkpoints share dataset settings.
 
 `evaluate.column` selects optional CSV fields: `dataset` adds `mask`,
-`interpolation`, and `target`; `train` adds `normalize`, `conv1`, and `fc`;
+`interpolation`, `target`, `mapping`, and `mask_fill`; `train` adds `normalize`, `mask_init`, `conv1`, and `fc`;
 `all` includes both groups. `epoch`, `model`, `crop`, `seg model`, and `image`
 are always included, along with metrics, seed, split, sample count, kind, saved
 config, and checkpoint path. `conv1` is its saved learning rate, or zero when
 frozen (also zero for MLP/CNN); `fc` is the saved `train.learning_rate`.
+Checkpoint names for `train.name=train` and `train.name=all` include
+`maskinit-zero` or `maskinit-default` from `transfer.mask_init`.
+Thermal-mapped checkpoint and visualization filenames also include the mapping and
+fill value. Older checkpoints without mapping settings use original mapping.
 No checkpoints, a missing filename in single mode, or a missing file produces an error.
 
 Checkpoints supply their own training configuration and seed; the top-level

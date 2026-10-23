@@ -5,17 +5,21 @@ from torch import nn
 
 
 class TemperatureNormalizedRegressor(nn.Module):
-    def __init__(self, image="thermal", normalize="temp", in_channels=3):
+    def __init__(self, image="thermal", normalize="temp", in_channels=3, mapping="original"):
         super().__init__()
         if image not in {"thermal", "visual"}:
             raise ValueError("image must be thermal or visual")
         if normalize not in {"none", "temp", "all"}:
             raise ValueError("normalize must be none, temp, or all")
+        if mapping not in {"original", "thermal"}:
+            raise ValueError("mapping must be original or thermal")
         self.image = image
+        self.mapping = mapping
+        self.normalize_all_channels = normalize == "all" or (image == "thermal" and mapping == "thermal")
         # Controlled by train.normalize.
         self.normalize = normalize
         if normalize != "none":
-            channels = in_channels if normalize == "all" else 1
+            channels = in_channels if self.normalize_all_channels else 1
             self.register_buffer("input_mean", torch.zeros(1, channels, 1, 1))
             self.register_buffer("input_std", torch.ones(1, channels, 1, 1))
             self.register_buffer("normalization_fitted", torch.tensor(False))
@@ -25,7 +29,7 @@ class TemperatureNormalizedRegressor(nn.Module):
         """Fit each selected channel across training samples and spatial pixels."""
         if self.normalize == "none" or (self.normalize == "temp" and self.image != "thermal"):
             return
-        values = train_data[:, :1] if self.normalize == "temp" else train_data
+        values = train_data if self.normalize_all_channels else train_data[:, :1]
         values = values.double()
         if values.numel() == 0 or not torch.isfinite(values).all():
             raise ValueError("Training inputs must be nonempty and finite")
@@ -40,7 +44,7 @@ class TemperatureNormalizedRegressor(nn.Module):
             return x
         if not self.normalization_fitted:
             raise RuntimeError("Fit normalization on training data before prediction")
-        if self.normalize == "all":
+        if self.normalize_all_channels:
             if x.shape[1] != self.input_mean.shape[1]:
                 raise ValueError("Input channel count does not match the model")
             return (x - self.input_mean) / self.input_std

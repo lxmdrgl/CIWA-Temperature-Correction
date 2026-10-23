@@ -6,8 +6,9 @@ from models.resnet import ResNetRegressor
 
 class ResNet34Regressor(ResNetRegressor):
     def __init__(self, in_channels=3, image="thermal", pretrained=True,
-                 freeze_backbone=False, normalize="temp", freeze_conv1=False):
+                 freeze_backbone=False, normalize="temp", freeze_conv1=False,
+                 mask_init="zero", mapping="original"):
         super().__init__(resnet34, ResNet34_Weights.DEFAULT, in_channels=in_channels,
                          image=image, pretrained=pretrained,
                          freeze_backbone=freeze_backbone, normalize=normalize,
-                         freeze_conv1=freeze_conv1)
+                         freeze_conv1=freeze_conv1, mask_init=mask_init, mapping=mapping)

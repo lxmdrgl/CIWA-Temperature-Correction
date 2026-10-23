@@ -21,20 +21,20 @@ def main(cfg: DictConfig) -> None:
         raise ValueError("visualize.split must be train, valid, or test")
     settings = OmegaConf.to_container(cfg.dataset, resolve=True)
     settings["root"] = to_absolute_path(settings["root"])
+    # Always retrieve the direct label so both targets can be displayed.
+    settings["target"] = "direct"
     if settings["image"] not in {"thermal", "visual"}:
         raise ValueError("dataset.image must be thermal or visual")
     if settings["mask"] not in {"none", "hard", "soft", "both"}:
         raise ValueError("dataset.mask must be none, hard, soft, or both")
-    if settings["target"] not in {"direct", "correction"}:
-        raise ValueError("dataset.target must be direct or correction")
     dataset = TemperatureDataset(split=split, **settings)
     if not 0 <= index < len(dataset):
         raise ValueError(f"visualize.index must be between 0 and {len(dataset) - 1}")
     data, target, metadata = dataset.get_sample(index)
 
-    # Reconstruct absolute temperatures even when the label is a correction.
     baseline = float(metadata["baseline"])
-    actual = float(target + baseline if settings["target"] == "correction" else target)
+    actual = float(target)
+    correction = actual - baseline
     metrics = calculate_metrics([actual], [baseline])
 
     if settings["image"] == "visual":
@@ -46,28 +46,32 @@ def main(cfg: DictConfig) -> None:
             names.append("Hard mask")
         if settings["mask"] in {"both", "soft"}:
             names.append("Soft mask")
-        channels = [(name, data[..., i], "inferno" if i == 0 else "gray")
+        mapped = settings.get("mapping", "original") == "thermal"
+        channels = [(f"{name} × temperature" if mapped and i > 0 else name,
+                     data[..., i], "inferno" if i == 0 or mapped else "gray")
                     for i, name in enumerate(names)]
     channels.append(("label", metadata["thermal_label_mask"], "gray"))
 
     lines = [f"thermal_label_target (actual): {actual:.4f} °C",
              f"thermal_hard_target (baseline): {baseline:.4f} °C",
-             f"Configured label ({settings['target']}): {float(target):.4f}",
+             f"Label (direct): {actual:.4f} °C",
+             f"Label (correction): {correction:.4f} °C",
              " | ".join(
                  f"{name.upper()}: {metrics[name]:.4f}" for name in ("rmse", "mse", "mae", "mbe")),
-             "MBE = baseline - actual", "", "Dataset configuration:"]
+             "", "Dataset configuration:"]
     text = ", ".join(f"{key}={value}" for key, value in
-                     OmegaConf.to_container(cfg.dataset, resolve=True).items())
+                     OmegaConf.to_container(cfg.dataset, resolve=True).items() if key != "target")
     lines.append(fill(text, width=110, subsequent_indent="  "))
     details = "\n".join(lines)
     text_height = 0.22 * len(details.splitlines())
     figure = Figure(figsize=(max(12, 4 * len(channels)), 3.5 + text_height), layout="constrained")
     FigureCanvasAgg(figure)
     grid = figure.add_gridspec(2, len(channels), height_ratios=[3.5, text_height])
-    figure.suptitle(f"{cfg.dataset.crop} | {split} | index {index}")
+    figure.suptitle(f"{cfg.dataset.crop} | {cfg.dataset.model} | {split} | index {index}")
     for i, (name, image, cmap) in enumerate(channels):
         axes = figure.add_subplot(grid[0, i])
-        limits = {"vmin": 0, "vmax": 1} if "mask" in name or name == "label" else {}
+        binary_or_soft = "mask" in name and "× temperature" not in name
+        limits = {"vmin": 0, "vmax": 1} if binary_or_soft or name == "label" else {}
         if name == "label":
             limits["interpolation"] = "nearest"
         shown = axes.imshow(image, cmap=cmap, **limits)
@@ -82,7 +86,9 @@ def main(cfg: DictConfig) -> None:
     output = Path(to_absolute_path(cfg.visualize.output)) / str(index)
     output.mkdir(parents=True, exist_ok=True)
     name = "_".join(str(cfg.dataset[key]) for key in
-                    ("crop", "model", "image", "mask", "interpolation", "target"))
+                    ("crop", "model", "image", "mask", "interpolation"))
+    if settings["image"] == "thermal" and settings.get("mapping", "original") == "thermal":
+        name += f"_mapping-thermal_fill{settings.get('mask_fill', 0.0)}"
     path = output / f"{name}_{split}_{index}.png"
     figure.savefig(path, dpi=150)
     print(f"Saved visualization: {path}")

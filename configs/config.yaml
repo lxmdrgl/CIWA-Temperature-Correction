@@ -11,6 +11,10 @@ dataset:
   image: thermal
   # mask: both, soft, hard, none
   mask: hard
+  # mapping: original, thermal
+  mapping: original
+  # Temperature assigned where a mask is zero (thermal mapping only)
+  mask_fill: 0.0
   # interpolation: nearest, area
   interpolation: nearest
   # target: direct, correction
@@ -27,22 +31,25 @@ train:
   shuffle: true
   learning_rate: 0.001
   weight_decay: 0.0001
-  patience: 15
+  patience: 5
   # optimizer: adam, adamw, sgd 
   optimizer: adamw
   # normalize: none, temp, all
   normalize: temp
-  # Transfer learning settings shared by all ResNet models
-  transfer:
-    pretrained: true
-    # Freeze residual blocks and BatchNorm; the regression head stays trainable
-    freeze_backbone: true
-    freeze_conv1: false
-    # Applied only when conv1 is trainable; other layers use train.learning_rate
-    learning_rate_conv1: 0.0001
   # name: dataset, train, all
   name: all
-  output: checkpoints/all
+  output: checkpoints/resnet50
+
+# Transfer learning settings shared by all ResNet models
+transfer:
+  pretrained: true
+  # Freeze residual blocks and BatchNorm; the regression head stays trainable
+  freeze_backbone: true
+  freeze_conv1: false
+  # Applied only when conv1 is trainable; other layers use train.learning_rate
+  lr_conv1: 0.0001
+  # mask_init: zero, default
+  mask_init: zero
 
 visualize:
   # split: train, valid, test
@@ -51,18 +58,18 @@ visualize:
   output: visualize
 
 evaluate:
-  root: checkpoints/all
+  root: checkpoints/resnet50
   # split: train, valid, test
-  split: valid
+  split: test
   # checkpoint: all, single
-  checkpoint: single
+  checkpoint: all
   # Filename within root; required only when checkpoint is single
-  name: mlp_tomato_frrna_thermal_none_nearest_correction_temp_fc0.001_cv0_mse_seed0_val1.2498_2026-10-22_04-37-42.pt
+  name: null
   # true: baseline rows only; false: model rows only
   baseline: false
   # column: dataset, train, all
   column: all
-  output: results/metrics_all.csv
+  output: results/metrics_resnet50.csv
 
 hydra:
   run:

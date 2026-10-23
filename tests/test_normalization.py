@@ -95,6 +95,18 @@ class NormalizationTests(unittest.TestCase):
         torch.testing.assert_close(model.normalize_inputs(self.data), self.data)
         self.assertEqual(dict(model.named_buffers()), {})
 
+    def test_thermal_mapping_temp_normalizes_each_channel(self):
+        train = self.data.clone()
+        train[:, 1:] *= train[:, :1]
+        train[0, 1, :16] = 0.
+        model = TemperatureNormalizedRegressor(mapping="thermal", normalize="temp", in_channels=3)
+        model.fit_normalization(train)
+        mean = train.mean(dim=(0, 2, 3), keepdim=True)
+        std = train.std(dim=(0, 2, 3), correction=0, keepdim=True).clamp_min(1e-6)
+        torch.testing.assert_close(model.input_mean, mean)
+        torch.testing.assert_close(model.input_std, std)
+        torch.testing.assert_close(model.normalize_inputs(train + 5.), (train + 5. - mean) / std)
+
     def test_invalid_normalization_modes_are_rejected(self):
         for mode in (True, False, None, "invalid"):
             with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, "none, temp, or all"):
@@ -104,9 +116,9 @@ class NormalizationTests(unittest.TestCase):
         cfg = OmegaConf.create({
             "dataset": {"root": "unused", "crop": "tomato", "model": "fcdensenet",
                         "image": "thermal", "mask": "both",
-                        "interpolation": "nearest", "target": "direct"},
-            "train": {"model": "mlp", "batch_size": 2, "seed": 0, "learning_rate": 0.001,
-                      "transfer": {"freeze_conv1": False, "learning_rate_conv1": 0.0001}},
+                        "interpolation": "nearest", "target": "direct", "mapping": "thermal"},
+            "train": {"model": "mlp", "batch_size": 2, "seed": 0, "learning_rate": 0.001},
+            "transfer": {"freeze_conv1": False, "lr_conv1": 0.0001},
         })
         metadata = {"baseline": torch.tensor([[14.], [19.]]),
                     "reference": torch.tensor([[15.], [20.]])}
@@ -116,15 +128,15 @@ class NormalizationTests(unittest.TestCase):
                     cfg.train.model = name
                     cfg.train.normalize = normalized
                     if name == "mlp":
-                        model = MLPRegressor(self.data[0].numel(), normalize=normalized)
+                        model = MLPRegressor(self.data[0].numel(), normalize=normalized, mapping="thermal")
                     elif name == "cnn":
-                        model = CNNRegressor(in_channels=3, normalize=normalized)
+                        model = CNNRegressor(in_channels=3, normalize=normalized, mapping="thermal")
                     else:
                         regressors = {"resnet18": ResNet18Regressor,
                                       "resnet34": ResNet34Regressor,
                                       "resnet50": ResNet50Regressor}
                         model = regressors[name](in_channels=3, pretrained=False,
-                                                 normalize=normalized)
+                                                 normalize=normalized, mapping="thermal")
                     model.fit_normalization(self.data)
                     model.eval()
                     with torch.inference_mode():

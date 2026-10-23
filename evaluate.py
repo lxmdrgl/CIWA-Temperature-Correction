@@ -51,6 +51,9 @@ def evaluate_checkpoint(checkpoint_path, split="test",
     if saved_config is None:
         raise ValueError("Checkpoint must contain its saved training configuration.")
     cfg = OmegaConf.create(saved_config)
+    # Older checkpoints saved transfer settings inside the train section.
+    if "transfer" not in cfg and "transfer" in cfg.train:
+        cfg.transfer = cfg.train.pop("transfer")
     if overrides:
         allowed = {"dataset.root", "train.batch_size"}
         if any(item.split("=", 1)[0] not in allowed for item in overrides):
@@ -75,10 +78,11 @@ def evaluate_checkpoint(checkpoint_path, split="test",
     normalized = cfg.train.normalize
     if cfg.train.model == "mlp":
         model = MLPRegressor(input_size=data[0].numel(), image=cfg.dataset.image,
-                             normalize=normalized, in_channels=data.shape[1])
+                             normalize=normalized, in_channels=data.shape[1],
+                             mapping=cfg.dataset.get("mapping", "original"))
     elif cfg.train.model == "cnn":
         model = CNNRegressor(in_channels=data.shape[1], image=cfg.dataset.image,
-                             normalize=normalized)
+                             normalize=normalized, mapping=cfg.dataset.get("mapping", "original"))
     elif cfg.train.model in {"resnet18", "resnet34", "resnet50"}:
         from models.resnet18 import ResNet18Regressor
         from models.resnet34 import ResNet34Regressor
@@ -90,6 +94,7 @@ def evaluate_checkpoint(checkpoint_path, split="test",
         model = regressors[cfg.train.model](
             in_channels=data.shape[1], image=cfg.dataset.image, pretrained=False,
             normalize=normalized,
+            mapping=cfg.dataset.get("mapping", "original"),
         )
     else:
         raise ValueError(f"Invalid training model: {cfg.train.model}")
@@ -125,13 +130,15 @@ def write_metrics(cfg, split, reference, predictions, output,
     }
     if column in {"dataset", "all"}:
         common.update(mask=cfg.dataset.mask, interpolation=cfg.dataset.interpolation,
-                      target=cfg.dataset.target)
+                      target=cfg.dataset.target, mapping=cfg.dataset.get("mapping", "original"),
+                      mask_fill=cfg.dataset.get("mask_fill", 0.0))
     if column in {"train", "all"}:
         common.update(
             normalize=cfg.train.normalize,
-            conv1=(cfg.train.transfer.learning_rate_conv1
+            mask_init=OmegaConf.select(cfg, "transfer.mask_init", default="zero"),
+            conv1=(cfg.transfer.lr_conv1
                    if cfg.train.model in {"resnet18", "resnet34", "resnet50"}
-                   and not cfg.train.transfer.freeze_conv1 else 0),
+                   and not cfg.transfer.freeze_conv1 else 0),
             fc=cfg.train.learning_rate,
         )
     common.update(seed=seed, split=split, samples=len(reference))

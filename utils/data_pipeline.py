@@ -24,6 +24,8 @@ def load_dataset(cfg, split="train", return_metadata=False):
         mask=mask,
         interpolation=cfg.dataset.interpolation,
         target=cfg.dataset.target,
+        mapping=getattr(cfg.dataset, "mapping", "original"),
+        mask_fill=getattr(cfg.dataset, "mask_fill", 0.0),
     )
 
     images = []

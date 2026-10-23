@@ -3,8 +3,8 @@ from models.normalization import TemperatureNormalizedRegressor
 
 class CNNRegressor(TemperatureNormalizedRegressor):
     def __init__(self, in_channels=1, hidden_size=256, num_outputs=1, dropout=0.2,
-                 image="thermal", normalize="temp"):
-        super().__init__(image=image, normalize=normalize, in_channels=in_channels)
+                 image="thermal", normalize="temp", mapping="original"):
+        super().__init__(image=image, normalize=normalize, in_channels=in_channels, mapping=mapping)
 
         self.in_channels = in_channels
         self.hidden_size = hidden_size
