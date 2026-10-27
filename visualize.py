@@ -1,4 +1,4 @@
-"""Plot sample inputs and the thermal label mask, with temperatures and metrics."""
+"""Plot visual counterparts above sample inputs, with temperatures and metrics."""
 
 from pathlib import Path
 from textwrap import fill
@@ -27,7 +27,9 @@ def main(cfg: DictConfig) -> None:
         raise ValueError("dataset.image must be thermal or visual")
     if settings["mask"] not in {"none", "hard", "soft", "both"}:
         raise ValueError("dataset.mask must be none, hard, soft, or both")
-    dataset = TemperatureDataset(split=split, **settings)
+    # Display every thermal channel regardless of the selected training inputs.
+    display_settings = {**settings, "image": "thermal", "mask": "both"}
+    dataset = TemperatureDataset(split=split, **display_settings)
     if not 0 <= index < len(dataset):
         raise ValueError(f"visualize.index must be between 0 and {len(dataset) - 1}")
     data, target, metadata = dataset.get_sample(index)
@@ -37,20 +39,18 @@ def main(cfg: DictConfig) -> None:
     correction = actual - baseline
     metrics = calculate_metrics([actual], [baseline])
 
-    if settings["image"] == "visual":
-        # OpenCV loads BGR; display RGB without changing the dataset input.
-        channels = [("RGB", cv2.cvtColor(data, cv2.COLOR_BGR2RGB), None)]
-    else:
-        names = ["Temperatures"]
-        if settings["mask"] in {"both", "hard"}:
-            names.append("Hard mask")
-        if settings["mask"] in {"both", "soft"}:
-            names.append("Soft mask")
-        mapped = settings.get("mapping", "original") == "thermal"
-        channels = [(f"{name} × temperature" if mapped and i > 0 else name,
-                     data[..., i], "inferno" if i == 0 or mapped else "gray")
-                    for i, name in enumerate(names)]
+    names = ["Temperatures", "Hard mask", "Soft mask"]
+    mapped = settings.get("mapping", "original") == "thermal"
+    channels = [(f"{name} × temperature" if mapped and i > 0 else name,
+                 data[..., i], "inferno" if i == 0 or mapped else "gray")
+                for i, name in enumerate(names)]
     channels.append(("label", metadata["thermal_label_mask"], "gray"))
+    visual_channels = [
+        ("visual_image", cv2.cvtColor(dataset.visual_images[index], cv2.COLOR_BGR2RGB), None),
+        ("visual_hard_mask", dataset.visual_hard_masks[index], "gray"),
+        ("visual_soft_mask", dataset.visual_soft_masks[index], "gray"),
+        ("visual_label_mask", dataset.visual_label_masks[index], "gray"),
+    ]
 
     lines = [f"thermal_label_target (actual): {actual:.4f} °C",
              f"thermal_hard_target (baseline): {baseline:.4f} °C",
@@ -64,22 +64,24 @@ def main(cfg: DictConfig) -> None:
     lines.append(fill(text, width=110, subsequent_indent="  "))
     details = "\n".join(lines)
     text_height = 0.22 * len(details.splitlines())
-    figure = Figure(figsize=(max(12, 4 * len(channels)), 3.5 + text_height), layout="constrained")
+    figure = Figure(figsize=(16, 7 + text_height), layout="constrained")
     FigureCanvasAgg(figure)
-    grid = figure.add_gridspec(2, len(channels), height_ratios=[3.5, text_height])
+    grid = figure.add_gridspec(3, 4, height_ratios=[3.5, 3.5, text_height])
     figure.suptitle(f"{cfg.dataset.crop} | {cfg.dataset.model} | {split} | index {index}")
-    for i, (name, image, cmap) in enumerate(channels):
-        axes = figure.add_subplot(grid[0, i])
+    panels = [(0, i, channel) for i, channel in enumerate(visual_channels)]
+    panels.extend((1, i, channel) for i, channel in enumerate(channels))
+    for row, column, (name, image, cmap) in panels:
+        axes = figure.add_subplot(grid[row, column])
         binary_or_soft = "mask" in name and "× temperature" not in name
         limits = {"vmin": 0, "vmax": 1} if binary_or_soft or name == "label" else {}
-        if name == "label":
+        if name in {"label", "visual_label_mask", "visual_hard_mask"}:
             limits["interpolation"] = "nearest"
         shown = axes.imshow(image, cmap=cmap, **limits)
         axes.set_title(name)
         axes.set_axis_off()
         if cmap:
             figure.colorbar(shown, ax=axes, shrink=0.8)
-    info = figure.add_subplot(grid[1, :])
+    info = figure.add_subplot(grid[2, :])
     info.set_axis_off()
     info.text(0, 1, details, transform=info.transAxes, va="top", fontsize=9, family="monospace")
 

@@ -50,8 +50,8 @@ class EvaluationTests(unittest.TestCase):
             def __len__(self):
                 return 1
 
-            def __getitem__(self, index):
-                return np.zeros((2, 2, 3)), 2.0
+            def get_sample(self, index):
+                return np.zeros((2, 2, 3)), 2.0, {"baseline": 15.0}
 
         cfg = SimpleNamespace(dataset=SimpleNamespace(
             root="unused", crop="tomato", model="fcdensenet", image="thermal",

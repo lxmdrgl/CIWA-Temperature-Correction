@@ -19,6 +19,10 @@ dataset:
   interpolation: nearest
   # target: direct, correction
   target: correction
+  # reg_output: canopy, cwsi
+  reg_output: canopy
+  # Percentage of upper and lower bound temperature
+  bound: 5.0
 
 train:
   seed: 0
