@@ -15,6 +15,7 @@ import torch
 
 from models.mlp import MLPRegressor
 from models.cnn import CNNRegressor
+from utils.regression import output_names
 from utils.data_pipeline import load_dataset, create_loader
 
 
@@ -42,7 +43,9 @@ def calculate_metrics(reference, prediction):
 
 def evaluate_checkpoint(checkpoint_path, split="test",
                         overrides=None, output="results/metrics.csv", include_baseline=True,
-                        column="all"):
+                        column="all", metric="all"):
+    if metric not in {"all", "avg"}:
+        raise ValueError("evaluate.metric must be all or avg")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint_path = Path(checkpoint_path).resolve()
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
@@ -63,26 +66,26 @@ def evaluate_checkpoint(checkpoint_path, split="test",
             )
         cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))
 
+    num_outputs = len(output_names(cfg.dataset.get("reg_output", "canopy")))
     cfg.dataset.root = to_absolute_path(cfg.dataset.root)
     data, labels, metadata = load_dataset(cfg, split, return_metadata=True)
-    baseline = metadata["baseline"].numpy().reshape(-1)
-    reference = metadata["reference"].numpy().reshape(-1)
+    baseline = metadata["baseline"].numpy()
+    reference = metadata["reference"].numpy()
     if include_baseline:
         return write_metrics(
             cfg, split, reference, [("baseline", baseline)], output,
             checkpoint_path=str(checkpoint_path), epoch=checkpoint["epoch"],
-            seed=cfg.train.seed, column=column,
+            seed=cfg.train.seed, column=column, metric=metric,
         )
     loader = create_loader(data, labels, cfg.train.batch_size, shuffle=False)
     state = checkpoint["model_state_dict"]
     normalized = cfg.train.normalize
     if cfg.train.model == "mlp":
-        model = MLPRegressor(input_size=data[0].numel(), image=cfg.dataset.image,
-                             normalize=normalized, in_channels=data.shape[1],
-                             mapping=cfg.dataset.get("mapping", "original"))
+        model = MLPRegressor(num_outputs=num_outputs, input_size=data[0].numel(), image=cfg.dataset.image,
+                             normalize=normalized, in_channels=data.shape[1])
     elif cfg.train.model == "cnn":
-        model = CNNRegressor(in_channels=data.shape[1], image=cfg.dataset.image,
-                             normalize=normalized, mapping=cfg.dataset.get("mapping", "original"))
+        model = CNNRegressor(num_outputs=num_outputs, in_channels=data.shape[1], image=cfg.dataset.image,
+                             normalize=normalized)
     elif cfg.train.model in {"resnet18", "resnet34", "resnet50"}:
         from models.resnet18 import ResNet18Regressor
         from models.resnet34 import ResNet34Regressor
@@ -92,9 +95,9 @@ def evaluate_checkpoint(checkpoint_path, split="test",
         regressors = {"resnet18": ResNet18Regressor, "resnet34": ResNet34Regressor,
                       "resnet50": ResNet50Regressor}
         model = regressors[cfg.train.model](
+            num_outputs=num_outputs,
             in_channels=data.shape[1], image=cfg.dataset.image, pretrained=False,
             normalize=normalized,
-            mapping=cfg.dataset.get("mapping", "original"),
         )
     else:
         raise ValueError(f"Invalid training model: {cfg.train.model}")
@@ -106,21 +109,25 @@ def evaluate_checkpoint(checkpoint_path, split="test",
     with torch.inference_mode():
         for inputs, _ in loader:
             predictions.append(model(inputs.to(device)).cpu().double())
-    prediction = torch.cat(predictions).numpy().reshape(-1)
+    prediction = torch.cat(predictions).numpy()
+    if prediction.shape != reference.shape:
+        raise ValueError("Model output shape must match reference shape")
     if cfg.dataset.target == "correction":
         prediction = baseline + prediction
 
     return write_metrics(
         cfg, split, reference, [("model", prediction)],
         output, checkpoint_path=str(checkpoint_path), epoch=checkpoint["epoch"],
-        seed=cfg.train.seed, column=column,
+        seed=cfg.train.seed, column=column, metric=metric,
     )
 
 
 def write_metrics(cfg, split, reference, predictions, output,
-                  checkpoint_path="", epoch=0, seed="unknown", column="all"):
+                  checkpoint_path="", epoch=0, seed="unknown", column="all", metric="all"):
     if column not in {"dataset", "train", "all"}:
         raise ValueError("evaluate.column must be dataset, train, or all")
+    if metric not in {"all", "avg"}:
+        raise ValueError("evaluate.metric must be all or avg")
     common = {
         "epoch": epoch,
         "model": cfg.train.model,
@@ -130,8 +137,7 @@ def write_metrics(cfg, split, reference, predictions, output,
     }
     if column in {"dataset", "all"}:
         common.update(mask=cfg.dataset.mask, interpolation=cfg.dataset.interpolation,
-                      target=cfg.dataset.target, mapping=cfg.dataset.get("mapping", "original"),
-                      mask_fill=cfg.dataset.get("mask_fill", 0.0))
+                      target=cfg.dataset.target)
     if column in {"train", "all"}:
         common.update(
             normalize=cfg.train.normalize,
@@ -141,18 +147,35 @@ def write_metrics(cfg, split, reference, predictions, output,
                    and not cfg.transfer.freeze_conv1 else 0),
             fc=cfg.train.learning_rate,
         )
-    common.update(seed=seed, split=split, samples=len(reference))
+    names = output_names(cfg.dataset.get("reg_output", "canopy"))
+    reference = np.asarray(reference, dtype=np.float64)
+    if reference.ndim == 1 and len(names) == 1:
+        reference = reference[:, None]
+    if reference.ndim != 2 or reference.shape[1] != len(names):
+        raise ValueError("Reference shape must match reg_output: (N, 1) or (N, 3)")
+    common.update(reg_output=cfg.dataset.get("reg_output", "canopy"),
+                  bound=cfg.dataset.get("bound", 5.0),
+                  seed=seed, split=split, samples=len(reference))
     rows = []
     for kind, values in predictions:
-        metrics = calculate_metrics(reference, values)
-        rows.append({
-            **common, "kind": kind, **metrics,
-            "config": json.dumps(OmegaConf.to_container(cfg, resolve=True), sort_keys=True),
-            "checkpoint": checkpoint_path,
-        })
-        print(f"{kind} ({split}, n={len(reference)}): " + ", ".join(
-            f"{key}={value:.6f}" for key, value in metrics.items()
-        ))
+        values = np.asarray(values, dtype=np.float64)
+        if values.ndim == 1 and len(names) == 1:
+            values = values[:, None]
+        if values.shape != reference.shape:
+            raise ValueError("Prediction shape must match reference shape")
+        groups = ([("avg", reference, values)] if metric == "avg" else
+                  [(name, reference[:, index], values[:, index])
+                   for index, name in enumerate(names)])
+        for name, group_reference, group_prediction in groups:
+            metrics = calculate_metrics(group_reference, group_prediction)
+            rows.append({
+                **common, "kind": kind, "output": name, **metrics,
+                "config": json.dumps(OmegaConf.to_container(cfg, resolve=True), sort_keys=True),
+                "checkpoint": checkpoint_path,
+            })
+            print(f"{kind}/{name} ({split}, n={len(reference)}): " + ", ".join(
+                f"{key}={value:.6f}" for key, value in metrics.items()
+            ))
 
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -179,6 +202,9 @@ def run_evaluation(cfg):
     column = settings.get("column", "all")
     if column not in {"dataset", "train", "all"}:
         raise ValueError("evaluate.column must be dataset, train, or all")
+    metric = settings.get("metric", "all")
+    if metric not in {"all", "avg"}:
+        raise ValueError("evaluate.metric must be all or avg")
 
     root = Path(to_absolute_path(settings.root))
     if settings.checkpoint == "all":
@@ -201,7 +227,7 @@ def run_evaluation(cfg):
         print(f"Evaluating {checkpoint}", flush=True)
         rows.extend(evaluate_checkpoint(
             checkpoint, split=settings.split,
-            output=output, include_baseline=settings.baseline, column=column,
+            output=output, include_baseline=settings.baseline, column=column, metric=metric,
         ))
     return rows
 

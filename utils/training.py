@@ -22,6 +22,8 @@ def train_model(model, train_loader, criterion, optimizer, device):
         
         # go forward through model and find loss
         outputs = model(inputs)
+        if outputs.shape != targets.shape:
+            raise ValueError("Model output shape must match target shape")
         loss = criterion(outputs, targets)
 
         # backpropagation and optimize
@@ -48,6 +50,8 @@ def evaluate_model(model, test_loader, criterion, device):
             targets = targets.to(device, non_blocking=True)
 
             outputs = model(inputs)
+            if outputs.shape != targets.shape:
+                raise ValueError("Model output shape must match target shape")
             loss = criterion(outputs, targets)
 
             batch_size = inputs.size(0)

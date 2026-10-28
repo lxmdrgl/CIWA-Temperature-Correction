@@ -8,10 +8,11 @@ from models.normalization import TemperatureNormalizedRegressor
 class ResNetRegressor(TemperatureNormalizedRegressor):
     def __init__(self, builder, weights, in_channels=3, image="thermal", pretrained=True,
                  freeze_backbone=False, normalize="temp", freeze_conv1=False,
-                 mask_init="zero", mapping="original"):
-        super().__init__(image=image, normalize=normalize, in_channels=in_channels, mapping=mapping)
+                 mask_init="zero", num_outputs=1):
+        super().__init__(image=image, normalize=normalize, in_channels=in_channels,
+                         rgb_normalization="imagenet")
         if image == "visual" and in_channels != 3:
-            raise ValueError("Visual ResNet inputs must have three BGR channels")
+            raise ValueError("Visual ResNet inputs must have three RGB channels")
         if image == "thermal" and in_channels not in {1, 2, 3}:
             raise ValueError("Thermal inputs need temperature and up to two mask channels")
         if freeze_backbone and not pretrained:
@@ -22,26 +23,29 @@ class ResNetRegressor(TemperatureNormalizedRegressor):
         self.freeze_backbone = freeze_backbone
         self.freeze_conv1 = freeze_conv1
         self.backbone = builder(weights=weights if pretrained else None)
-        if image == "thermal":
+        if image in {"thermal", "both"}:
             original = self.backbone.conv1
             conv = nn.Conv2d(in_channels, original.out_channels,
                              kernel_size=original.kernel_size, stride=original.stride,
                              padding=original.padding, bias=False)
             if pretrained:
                 with torch.no_grad():
-                    if mapping == "thermal":
-                        # All inputs are thermal, with no RGB channel correspondence.
-                        conv.weight.copy_(original.weight.sum(dim=1, keepdim=True)
-                                          .expand(-1, in_channels, -1, -1) / in_channels)
+                    if image == "both":
+                        # Start T from the RGB mean, then scale all four image
+                        # channels by 3/4 to preserve the original channel sum.
+                        conv.weight[:, :3].copy_(original.weight * (3.0 / 4.0))
+                        conv.weight[:, 3:4].copy_(original.weight.mean(dim=1, keepdim=True)
+                                                 * (3.0 / 4.0))
                     else:
                         # Preserve the response to the thermal plane repeated across RGB.
                         conv.weight[:, :1].copy_(original.weight.sum(dim=1, keepdim=True))
-            if mapping == "original" and mask_init == "zero":
+            if mask_init == "zero":
                 with torch.no_grad():
-                    conv.weight[:, 1:].zero_()
+                    mask_start = 4 if image == "both" else 1
+                    conv.weight[:, mask_start:].zero_()
             self.backbone.conv1 = conv
 
-        self.backbone.fc = nn.Linear(self.backbone.fc.in_features, 1)
+        self.backbone.fc = nn.Linear(self.backbone.fc.in_features, num_outputs)
         if freeze_backbone:
             self.backbone.requires_grad_(False)
             self.backbone.fc.requires_grad_(True)

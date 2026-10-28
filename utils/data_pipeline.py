@@ -7,7 +7,7 @@ def load_dataset(cfg, split="train", return_metadata=False):
     """Load float32 inputs (N, C, H, W) and targets (N, 1) or (N, 3)."""
     mask = cfg.dataset.mask
 
-    if cfg.dataset.image not in {"thermal", "visual"}:
+    if cfg.dataset.image not in {"thermal", "visual", "both"}:
         raise ValueError(f"Invalid image type: {cfg.dataset.image}")
     if mask not in {"none", "hard", "soft", "both"}:
         raise ValueError(f"Invalid mask: {mask}")
@@ -23,8 +23,6 @@ def load_dataset(cfg, split="train", return_metadata=False):
         mask=mask,
         interpolation=cfg.dataset.interpolation,
         target=cfg.dataset.target,
-        mapping=getattr(cfg.dataset, "mapping", "original"),
-        mask_fill=getattr(cfg.dataset, "mask_fill", 0.0),
         reg_output=getattr(cfg.dataset, "reg_output", "canopy"),
         bound=getattr(cfg.dataset, "bound", 5.0),
     )

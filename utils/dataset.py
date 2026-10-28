@@ -7,13 +7,11 @@ import cv2
 
 class TemperatureDataset(Dataset):
     def __init__(self, root, split, crop, model, image, mask, interpolation, target,
-                 mapping="original", mask_fill=0.0, reg_output="canopy", bound=5.0):
+                 reg_output="canopy", bound=5.0):
+        if image not in {"thermal", "visual", "both"}:
+            raise ValueError("image must be thermal, visual, or both")
         if mask not in {"none", "hard", "soft", "both"}:
             raise ValueError("mask must be none, hard, soft, or both")
-        if mapping not in {"original", "thermal"}:
-            raise ValueError("mapping must be original or thermal")
-        if not np.isfinite(mask_fill):
-            raise ValueError("mask_fill must be finite")
         if reg_output not in {"canopy", "cwsi"}:
             raise ValueError("reg_output must be canopy or cwsi")
         if not np.isfinite(bound) or not 0 < bound <= 50:
@@ -26,8 +24,6 @@ class TemperatureDataset(Dataset):
         self.mask = mask
         self.interpolation = interpolation
         self.target = target
-        self.mapping = mapping
-        self.mask_fill = mask_fill
         self.reg_output = reg_output
         self.bound = bound
 
@@ -87,9 +83,6 @@ class TemperatureDataset(Dataset):
                 self.visual_soft_masks[index].astype(np.float32), size,
                 interpolation=interpolation_method,
             ))
-        if self.mapping == "thermal":
-            channels[1:] = [np.where(mask > 0, thermal_image * mask, self.mask_fill)
-                            for mask in channels[1:]]
         thermal_data = np.stack(channels, axis=-1)
 
         weight_sum_label = thermal_label_mask.sum()
@@ -109,8 +102,13 @@ class TemperatureDataset(Dataset):
         if self.image == "thermal":
             data = thermal_data
         elif self.image == "visual":
-            # (W, H, 3)
-            data = self.visual_images[index]
+            # (H, W, 3), RGB at the original visual resolution.
+            data = cv2.cvtColor(self.visual_images[index], cv2.COLOR_BGR2RGB)
+        elif self.image == "both":
+            # OpenCV loads BGR; vision models expect RGB before thermal channels.
+            rgb = cv2.cvtColor(self.visual_images[index], cv2.COLOR_BGR2RGB)
+            rgb = cv2.resize(rgb, size, interpolation=cv2.INTER_AREA)
+            data = np.concatenate((rgb, thermal_data), axis=-1)
         return data, thermal_target, {
             "thermal_label_mask": thermal_label_mask,
             "baseline": thermal_hard_target,
@@ -126,8 +124,6 @@ class TemperatureDataset(Dataset):
         label_dir = crop_dir / "original" / self.split / "label"
         model_dir = crop_dir / self.model / self.split / "logit"
 
-        
-        #if self.image == "thermal":
         # (N, H, W)
         thermal_images = np.stack([
             np.load(p)
@@ -135,7 +131,6 @@ class TemperatureDataset(Dataset):
             if p.is_file()
         ])
 
-        #if self.image == "visual":
         # (N, H, W, 3)
         visual_images = [
             cv2.imread(str(p))

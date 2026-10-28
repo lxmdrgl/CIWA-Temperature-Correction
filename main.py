@@ -10,6 +10,7 @@ from torch import nn
 
 from models.mlp import MLPRegressor
 from models.cnn import CNNRegressor
+from utils.regression import output_names
 from utils.data_pipeline import load_dataset, create_loader
 from utils.training import train_model, evaluate_model, save_model
 
@@ -18,6 +19,7 @@ def main(cfg: DictConfig) -> None:
     if cfg.train.model not in {"mlp", "cnn", "resnet18", "resnet34", "resnet50"}:
         raise ValueError(f"Invalid training model: {cfg.train.model}. "
                          "Choose mlp, cnn, resnet18, resnet34, or resnet50.")
+    num_outputs = len(output_names(cfg.dataset.get("reg_output", "canopy")))
     cfg.dataset.root = to_absolute_path(cfg.dataset.root)
     seed = cfg.train.get("seed", 0)
     random.seed(seed)
@@ -51,12 +53,11 @@ def main(cfg: DictConfig) -> None:
     )
 
     if cfg.train.model == "mlp":
-        model = MLPRegressor(input_size=train_data[0].numel(), image=cfg.dataset.image,
-                             normalize=cfg.train.normalize, in_channels=train_data.shape[1],
-                             mapping=cfg.dataset.get("mapping", "original"))
+        model = MLPRegressor(num_outputs=num_outputs, input_size=train_data[0].numel(), image=cfg.dataset.image,
+                             normalize=cfg.train.normalize, in_channels=train_data.shape[1])
     elif cfg.train.model == "cnn":
-        model = CNNRegressor(in_channels=train_data.shape[1], image=cfg.dataset.image,
-                             normalize=cfg.train.normalize, mapping=cfg.dataset.get("mapping", "original"))
+        model = CNNRegressor(num_outputs=num_outputs, in_channels=train_data.shape[1], image=cfg.dataset.image,
+                             normalize=cfg.train.normalize)
     elif cfg.train.model in {"resnet18", "resnet34", "resnet50"}:
         from models.resnet18 import ResNet18Regressor
         from models.resnet34 import ResNet34Regressor
@@ -65,13 +66,13 @@ def main(cfg: DictConfig) -> None:
         regressors = {"resnet18": ResNet18Regressor, "resnet34": ResNet34Regressor,
                       "resnet50": ResNet50Regressor}
         model = regressors[cfg.train.model](
+            num_outputs=num_outputs,
             in_channels=train_data.shape[1], image=cfg.dataset.image,
             pretrained=cfg.transfer.pretrained,
             freeze_backbone=cfg.transfer.freeze_backbone,
             freeze_conv1=cfg.transfer.freeze_conv1,
             mask_init=cfg.transfer.get("mask_init", "zero"),
             normalize=cfg.train.normalize,
-            mapping=cfg.dataset.get("mapping", "original"),
         )
     model.fit_normalization(train_data)
     model = model.to(device)
@@ -156,8 +157,9 @@ def main(cfg: DictConfig) -> None:
         )
     else:
         raise ValueError(f"Invalid train name: {cfg.train.name}. Choose dataset, train, or all.")
-    if cfg.dataset.image == "thermal" and cfg.dataset.get("mapping", "original") == "thermal":
-        name += f"_mapping-thermal_fill{cfg.dataset.get('mask_fill', 0.0)}"
+    name += f"_reg-{cfg.dataset.get('reg_output', 'canopy')}"
+    if cfg.dataset.get("reg_output", "canopy") == "cwsi":
+        name += f"_bound{cfg.dataset.get('bound', 5.0)}"
     save_path = save_model(
         model, optimizer, best_epoch, train_losses, valid_losses, test_losses, name,
         to_absolute_path(cfg.train.output),

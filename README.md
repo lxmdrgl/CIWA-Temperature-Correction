@@ -74,14 +74,42 @@ python main.py train.model=resnet50 train.learning_rate=0.0001
 ```
 
 ResNet-18, ResNet-34, and ResNet-50 are separate model choices, each using
-torchvision's corresponding ImageNet weights and a new single-output regression
+torchvision's corresponding ImageNet weights and a new regression
 layer. They share the `transfer` settings. The first pretrained run downloads
 the selected model's weights;
 later runs use the local cache. `transfer.pretrained=false` trains from
 scratch. Both direct and correction targets are supported.
 
+All models use `dataset.reg_output=canopy` (default) for one canopy-mean
+temperature output, or `dataset.reg_output=cwsi` for three temperature outputs
+in this order: canopy mean, upper-tail mean, lower-tail mean. These are the
+three temperatures used for CWSI, rather than a calculated CWSI index.
+`dataset.bound` sets the percentage of canopy pixels in each tail (default 5%).
+For correction targets, each output learns the difference from its corresponding
+hard-mask baseline. Training loss averages over samples and outputs.
+
+```powershell
+python main.py dataset.reg_output=cwsi dataset.bound=5.0
+```
+
+Evaluation restores the output mode from the checkpoint and writes a separate
+metrics row for each temperature, identified by `output` (`canopy`, `upper_tail`,
+`lower_tail`). `samples` counts images for each row. CSV rows also include
+`reg_output` and `bound` in every column mode; use a new results file if an
+existing CSV has the older columns. Older checkpoints without `reg_output`
+continue to use one canopy output. Visualizations display the corresponding
+direct and correction temperatures for each output. Checkpoint and visualization
+filenames include the output mode and, for CWSI, the tail percentage.
+
+`evaluate.metric=all` (default) reports each temperature separately.
+`evaluate.metric=avg` reports one row with `output=avg`, calculating metrics
+over all temperature values from all images together (3 × image count for CWSI).
+It does not average the three reported metric scores or average temperatures
+before comparing them. `samples` still counts images. The setting applies to
+both model and baseline evaluation; canopy mode combines its single output.
+
 For thermal images, the first convolution supports temperature plus the selected
-mask channels. With `dataset.mapping=original`, pretrained RGB filters are summed into the temperature channel;
+mask channels. Pretrained RGB filters are summed into the temperature channel;
 `transfer.mask_init=zero` starts mask weights at zero (the default), while
 `transfer.mask_init=default` keeps PyTorch's default random initialization
 for those weights. This option also applies when training from scratch; it has no
@@ -93,29 +121,38 @@ the hard mask; `soft` adds the probability mask; `both` adds hard and soft masks
 in that order. The hard mask is still used to calculate the correction target and
 baseline even when it is excluded from the inputs.
 
-`dataset.mapping=original` preserves the existing inputs. With
-`dataset.mapping=thermal`, inputs become temperature followed by each selected
-mask multiplied by temperature: `[T, T * hard, T * soft]` for `mask=both`.
-Pixels where a mask is zero use `dataset.mask_fill` (default `0.0` °C).
-Soft masks retain their probability weighting; only zero-mask pixels use the fill.
-The first temperature channel, target labels, and baseline calculations are unchanged.
-Visual inputs are unchanged by mapping.
+`dataset.image=visual` converts OpenCV's BGR image to RGB and preserves its
+original spatial resolution.
 
-For thermal mapping, every input kernel is initialized to the mean of the RGB
-kernels scaled by `3/C`, equivalently their sum divided by the input channel count
-`C`. This same-scaled adaptation applies to one, two, and three channels because
-none corresponds to an RGB color band. `transfer.mask_init` is ignored in thermal mapping; without pretraining,
-all input-channel weights retain PyTorch's default initialization.
+`dataset.image=both` resizes the visual image to the thermal image's width and
+height with area interpolation and prepends its channels in RGB order. Inputs
+are `[R, G, B, T]`, `[R, G, B, T, hard]`, `[R, G, B, T, soft]`, or
+`[R, G, B, T, hard, soft]` according to `dataset.mask`. The loader returns
+float32 tensors in PyTorch's `(N, C, H, W)` layout. The loader retains RGB on
+the 0–255 scale; the model divides color channels by 255 before further
+normalization. Hard and soft masks retain their original values.
 
-All models (MLP, CNN, and the three ResNet variants) support three input
-normalization methods through `train.normalize`:
+For combined inputs, `train.normalize=temp` standardizes T and leaves masks
+unchanged; RGB uses the model-specific normalization below. Combined ResNet
+inputs initialize temperature from the mean of the pretrained RGB filters, then
+multiply all four RGB/temperature filters by `3/4`. Their sum equals the original
+RGB filter sum, regardless of the number of optional mask channels. Thermal-only
+inputs retain the summed RGB temperature filter. Masks follow `transfer.mask_init`.
 
-- `none`: pass all input channels through unchanged.
-- `temp` (default): with original mapping, standardize only the temperature channel;
-  masks retain their existing 0–1 values. With thermal mapping, standardize every
-  channel independently, including fill pixels. For visual inputs, leave inputs unchanged.
-- `all`: standardize every input channel independently, including hard and soft
-  masks, using a separate mean and standard deviation for each channel.
+For `image=visual` or `image=both`, all models first divide RGB by 255, then
+standardize each color channel. MLP and CNN use means and standard deviations
+fitted across all training images and spatial pixels, separately for R, G, and B.
+ResNet-18/34/50 use fixed ImageNet means `[0.485, 0.456, 0.406]` and standard
+deviations `[0.229, 0.224, 0.225]`, including when training from scratch.
+RGB normalization is applied for every `train.normalize` mode.
+
+`train.normalize` controls temperature and mask channels:
+
+- `none`: leave thermal and mask channels unchanged.
+- `temp` (default): standardize the temperature channel;
+  masks retain their existing 0–1 values.
+- `all`: standardize temperature and each mask channel independently. RGB keeps
+  its model-specific normalization and is not standardized a second time.
 
 Statistics are calculated across training samples and spatial pixels only, then
 reused for validation, test, and inference. Standard deviations are clamped to
@@ -125,10 +162,14 @@ remain in place.
 
 Normalization statistics are saved inside the model checkpoint and restored
 automatically during evaluation. The saved `train.normalize` setting determines
-whether input normalization is enabled.
+how thermal and mask channels are normalized. MLP/CNN RGB statistics are also
+saved in checkpoints and reused for validation, test, and inference.
 
-RGB normalization is not applied. Inputs keep the full image at the dataset's
-existing resolution; no center crop is applied.
+For `image=visual` or `image=both`, color channels are divided by 255 in
+`models/normalization.py` during every forward pass, including evaluation.
+Standardization follows scaling, so final color values can fall outside 0–1.
+No center crop is applied;
+combined inputs use the thermal image resolution.
 
 By default, all ResNet layers are fine-tuned. Set
 `transfer.freeze_backbone=true` to freeze residual blocks and BatchNorm
@@ -163,15 +204,13 @@ checkpoint's dataset settings, and skips model inference. Set it to `false` to
 write only model rows. Baseline rows may repeat when checkpoints share dataset settings.
 
 `evaluate.column` selects optional CSV fields: `dataset` adds `mask`,
-`interpolation`, `target`, `mapping`, and `mask_fill`; `train` adds `normalize`, `mask_init`, `conv1`, and `fc`;
+`interpolation` and `target`; `train` adds `normalize`, `mask_init`, `conv1`, and `fc`;
 `all` includes both groups. `epoch`, `model`, `crop`, `seg model`, and `image`
 are always included, along with metrics, seed, split, sample count, kind, saved
 config, and checkpoint path. `conv1` is its saved learning rate, or zero when
 frozen (also zero for MLP/CNN); `fc` is the saved `train.learning_rate`.
 Checkpoint names for `train.name=train` and `train.name=all` include
 `maskinit-zero` or `maskinit-default` from `transfer.mask_init`.
-Thermal-mapped checkpoint and visualization filenames also include the mapping and
-fill value. Older checkpoints without mapping settings use original mapping.
 No checkpoints, a missing filename in single mode, or a missing file produces an error.
 
 Checkpoints supply their own training configuration and seed; the top-level

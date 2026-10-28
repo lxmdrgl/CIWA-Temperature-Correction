@@ -35,11 +35,13 @@ class ResNet18Tests(unittest.TestCase):
         shifted[:, 0] += 5.
         torch.testing.assert_close(model(shifted)[:, 0], normalized[:, 0] + 1.)
 
-    def test_visual_input_is_unchanged(self):
+    def test_visual_input_uses_imagenet_statistics(self):
         model = self.model_type(image="visual", pretrained=False)
         model.backbone = torch.nn.Identity()
-        bgr = torch.tensor([0., 127.5, 255.]).view(1, 3, 1, 1)
-        torch.testing.assert_close(model(bgr), bgr)
+        rgb = torch.tensor([0., 127.5, 255.]).view(1, 3, 1, 1)
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+        torch.testing.assert_close(model(rgb), (rgb / 255.0 - mean) / std)
 
     def test_pretrained_thermal_adaptation_and_frozen_batchnorm(self):
         backbone = self.builder(weights=None)
@@ -91,18 +93,6 @@ class ResNet18Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "mask_init"):
             self.model_type(pretrained=False, mask_init="invalid")
 
-    def test_thermal_mapping_transfers_weights_to_every_channel(self):
-        for channels in (1, 2, 3):
-            for mask_init in ("zero", "default"):
-                with self.subTest(channels=channels, mask_init=mask_init):
-                    backbone = self.builder(weights=None)
-                    rgb = backbone.conv1.weight.detach().clone()
-                    with patch(f"models.{self.model_name}.{self.model_name}", return_value=backbone):
-                        model = self.model_type(in_channels=channels, pretrained=True,
-                                                mapping="thermal", mask_init=mask_init)
-                    expected = rgb.sum(dim=1, keepdim=True).expand(-1, channels, -1, -1) / channels
-                    torch.testing.assert_close(model.backbone.conv1.weight, expected)
-                    self.assertEqual(model.input_mean.shape[1], channels)
 
     def test_conv1_freezing_and_optimizer_learning_rates_are_independent(self):
         for freeze_backbone in (False, True):

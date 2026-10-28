@@ -74,6 +74,8 @@ class EvaluationTests(unittest.TestCase):
 
     def test_training_passes_normalization_and_transfer_settings_to_models(self):
         cfg = OmegaConf.load(Path(__file__).resolve().parents[1] / "configs/config.yaml")
+        cfg.dataset.image = "thermal"
+        cfg.dataset.reg_output = "canopy"
         cfg.transfer.pretrained = False
         cfg.transfer.freeze_backbone = False
         data = torch.zeros(2, 3, 32, 32)
@@ -93,7 +95,6 @@ class EvaluationTests(unittest.TestCase):
                         with self.assertRaisesRegex(RuntimeError, "constructor reached"):
                             main.__wrapped__(cfg)
                     self.assertEqual(build.call_args.kwargs["normalize"], normalize)
-                    self.assertEqual(build.call_args.kwargs["mapping"], cfg.dataset.mapping)
                     if name.startswith("resnet"):
                         self.assertFalse(build.call_args.kwargs["pretrained"])
                         self.assertFalse(build.call_args.kwargs["freeze_backbone"])
@@ -121,15 +122,90 @@ class EvaluationTests(unittest.TestCase):
                     self.assertEqual(call.kwargs["split"], "valid")
                     self.assertFalse(call.kwargs["include_baseline"])
                     self.assertEqual(call.kwargs["output"], str(root / "metrics.csv"))
+                    self.assertEqual(call.kwargs["metric"], "all")
 
             cfg.evaluate.checkpoint = "single"
             cfg.evaluate.name = "b.pt"
             cfg.evaluate.baseline = True
+            cfg.evaluate.metric = "avg"
             with patch("evaluate.evaluate_checkpoint", return_value=[]) as evaluate:
                 run_evaluation(cfg)
                 evaluate.assert_called_once()
                 self.assertEqual(evaluate.call_args.args[0], root / "b.pt")
                 self.assertTrue(evaluate.call_args.kwargs["include_baseline"])
+                self.assertEqual(evaluate.call_args.kwargs["metric"], "avg")
+
+    def test_avg_metrics_pool_all_temperatures_and_preserve_sample_count(self):
+        cfg = OmegaConf.load(Path(__file__).resolve().parents[1] / "configs/config.yaml")
+        cfg.dataset.reg_output = "cwsi"
+        reference = np.array([[10., 20., 30.], [40., 50., 60.]])
+        prediction = reference + np.array([[1., -2., 3.], [4., -5., 6.]])
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "metrics.csv"
+            separate = write_metrics(cfg, "test", reference, [("model", prediction)], output)
+            combined = write_metrics(cfg, "test", reference, [("model", prediction)],
+                                     output, metric="avg")
+            self.assertEqual(len(separate), 3)
+            self.assertEqual(len(combined), 1)
+            row = combined[0]
+            self.assertEqual(row["output"], "avg")
+            self.assertEqual(row["samples"], 2)
+            self.assertAlmostEqual(row["mse"], 91 / 6)
+            self.assertAlmostEqual(row["rmse"], np.sqrt(91 / 6))
+            self.assertAlmostEqual(row["mae"], 3.5)
+            self.assertAlmostEqual(row["mbe"], 7 / 6)
+            self.assertAlmostEqual(row["r2"], 1 - 91 / 1750)
+            self.assertNotAlmostEqual(row["rmse"], np.mean([r["rmse"] for r in separate]))
+            cfg.dataset.reg_output = "canopy"
+            canopy = write_metrics(cfg, "test", reference[:, :1],
+                [("model", prediction[:, :1])], output, metric="avg")
+            self.assertEqual(len(canopy), 1)
+            self.assertAlmostEqual(canopy[0]["mse"], 8.5)
+
+    def test_avg_checkpoint_evaluation_combines_reconstructed_corrections(self):
+        class ConstantModel(torch.nn.Module):
+            def forward(self, inputs):
+                return torch.tensor([1., -2., 3.], device=inputs.device).expand(len(inputs), -1)
+
+        cfg = OmegaConf.create({
+            "dataset": {"root": "unused", "crop": "tomato", "model": "fcdensenet",
+                        "image": "thermal", "mask": "hard", "interpolation": "nearest",
+                        "target": "correction", "reg_output": "cwsi"},
+            "train": {"model": "mlp", "batch_size": 2, "seed": 0,
+                      "normalize": "none", "learning_rate": 0.001},
+        })
+        baseline = torch.tensor([[10., 20., 5.], [30., 40., 25.]])
+        reference = baseline + torch.tensor([2., 4., 6.])
+        data = torch.zeros(2, 1, 4, 4)
+        with TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "model.pt"
+            torch.save({"config": OmegaConf.to_container(cfg), "epoch": 1,
+                        "model_state_dict": {}}, checkpoint)
+            for baseline_only in (True, False):
+                with patch("evaluate.load_dataset", return_value=(data, reference - baseline,
+                    {"baseline": baseline, "reference": reference})), patch(
+                    "evaluate.MLPRegressor", return_value=ConstantModel()
+                ):
+                    rows = evaluate_checkpoint(checkpoint, include_baseline=baseline_only,
+                        output=Path(directory) / "metrics.csv", metric="avg")
+                prediction = baseline if baseline_only else baseline + torch.tensor([1., -2., 3.])
+                expected = calculate_metrics(reference.numpy(), prediction.numpy())
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["output"], "avg")
+                for name, value in expected.items():
+                    self.assertAlmostEqual(rows[0][name], value)
+
+    def test_invalid_metric_selection_is_rejected_before_loading(self):
+        with patch("evaluate.torch.load") as load:
+            with self.assertRaisesRegex(ValueError, "evaluate.metric"):
+                evaluate_checkpoint("unused.pt", metric="invalid")
+            load.assert_not_called()
+        cfg = OmegaConf.create({"evaluate": {"split": "test", "baseline": False,
+                                            "metric": "invalid"}})
+        with self.assertRaisesRegex(ValueError, "evaluate.metric"):
+            run_evaluation(cfg)
+        with self.assertRaisesRegex(ValueError, "evaluate.metric"):
+            write_metrics(cfg, "test", [1.], [("model", [1.])], "unused.csv", metric="invalid")
 
     def test_invalid_evaluation_selection_is_rejected(self):
         with TemporaryDirectory() as directory:
@@ -193,12 +269,13 @@ class EvaluationTests(unittest.TestCase):
 
     def test_result_column_selection_and_learning_rates(self):
         cfg = OmegaConf.load(Path(__file__).resolve().parents[1] / "configs/config.yaml")
+        cfg.dataset.reg_output = "canopy"
         cfg.train.model = "resnet50"
         cfg.train.learning_rate = 0.001
         cfg.transfer.lr_conv1 = 0.0001
         cfg.transfer.mask_init = "default"
         required = ["epoch", "model", "crop", "seg model", "image"]
-        dataset_columns = ["mask", "interpolation", "target", "mapping", "mask_fill"]
+        dataset_columns = ["mask", "interpolation", "target"]
         train_columns = ["normalize", "mask_init", "conv1", "fc"]
         with TemporaryDirectory() as directory:
             for column in ("dataset", "train", "all"):

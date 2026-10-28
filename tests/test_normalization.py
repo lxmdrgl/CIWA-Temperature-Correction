@@ -65,11 +65,61 @@ class NormalizationTests(unittest.TestCase):
         model.fit_normalization(torch.ones_like(self.data))
         self.assertTrue(torch.isfinite(model.normalize_inputs(self.data)).all())
 
-    def test_visual_inputs_are_unchanged_for_mlp_and_cnn(self):
+    def test_visual_inputs_use_training_statistics_for_mlp_and_cnn(self):
+        data = torch.arange(2 * 3 * 32 * 32, dtype=torch.float32).reshape(2, 3, 32, 32) % 256
         for model in (MLPRegressor(self.data[0].numel(), image="visual"),
                       CNNRegressor(in_channels=3, image="visual")):
-            model.fit_normalization(self.data)
-            torch.testing.assert_close(model.normalize_inputs(self.data), self.data)
+            with self.assertRaisesRegex(RuntimeError, "Fit normalization"):
+                model.normalize_inputs(data)
+            model.fit_normalization(data)
+            rgb = data / 255.0
+            mean = rgb.mean(dim=(0, 2, 3), keepdim=True)
+            std = rgb.std(dim=(0, 2, 3), correction=0, keepdim=True)
+            torch.testing.assert_close(model.rgb_mean, mean)
+            torch.testing.assert_close(model.rgb_std, std)
+            torch.testing.assert_close(model.normalize_inputs(data), (rgb - mean) / std)
+            # Another split reuses the training statistics.
+            torch.testing.assert_close(model.normalize_inputs(data + 5),
+                                       ((data + 5) / 255.0 - mean) / std)
+
+    def test_rgb_training_statistics_apply_in_every_normalization_mode(self):
+        data = torch.tensor([0., 127.5, 255.]).reshape(1, 1, 1, 3).expand(2, 3, 1, 3).clone()
+        original = data.clone()
+        for mode in ("none", "temp", "all"):
+            with self.subTest(normalize=mode):
+                model = TemperatureNormalizedRegressor(image="visual", normalize=mode)
+                model.fit_normalization(data)
+                scaled = data / 255.0
+                mean = scaled.mean(dim=(0, 2, 3), keepdim=True)
+                std = scaled.std(dim=(0, 2, 3), correction=0, keepdim=True)
+                torch.testing.assert_close(model.rgb_mean, mean)
+                torch.testing.assert_close(model.rgb_std, std)
+                expected = (scaled - mean) / std
+                torch.testing.assert_close(model.normalize_inputs(data), expected)
+                torch.testing.assert_close(data, original)
+
+    def test_resnet_rgb_is_not_refitted_or_normalized_twice(self):
+        data = torch.arange(2 * 6 * 4 * 4, dtype=torch.float32).reshape(2, 6, 4, 4)
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+        for image in ("visual", "both"):
+            train = data[:, :3] if image == "visual" else data
+            for mode in ("none", "temp", "all"):
+                model = TemperatureNormalizedRegressor(image=image, in_channels=train.shape[1],
+                    normalize=mode, rgb_normalization="imagenet")
+                model.fit_normalization(train)
+                actual = model.normalize_inputs(train)
+                torch.testing.assert_close(actual[:, :3], (train[:, :3] / 255.0 - mean) / std)
+                torch.testing.assert_close(model.rgb_mean, mean)
+                torch.testing.assert_close(model.rgb_std, std)
+                if image == "both" and mode == "temp":
+                    torch.testing.assert_close(actual[:, 4:], train[:, 4:])
+
+    def test_constant_rgb_channels_have_finite_normalization(self):
+        data = torch.full((2, 3, 4, 4), 127.5)
+        model = TemperatureNormalizedRegressor(image="visual")
+        model.fit_normalization(data)
+        torch.testing.assert_close(model.normalize_inputs(data), torch.zeros_like(data))
 
     def test_all_standardizes_each_channel_using_fixed_training_statistics(self):
         for channels in (1, 2, 3):
@@ -95,17 +145,6 @@ class NormalizationTests(unittest.TestCase):
         torch.testing.assert_close(model.normalize_inputs(self.data), self.data)
         self.assertEqual(dict(model.named_buffers()), {})
 
-    def test_thermal_mapping_temp_normalizes_each_channel(self):
-        train = self.data.clone()
-        train[:, 1:] *= train[:, :1]
-        train[0, 1, :16] = 0.
-        model = TemperatureNormalizedRegressor(mapping="thermal", normalize="temp", in_channels=3)
-        model.fit_normalization(train)
-        mean = train.mean(dim=(0, 2, 3), keepdim=True)
-        std = train.std(dim=(0, 2, 3), correction=0, keepdim=True).clamp_min(1e-6)
-        torch.testing.assert_close(model.input_mean, mean)
-        torch.testing.assert_close(model.input_std, std)
-        torch.testing.assert_close(model.normalize_inputs(train + 5.), (train + 5. - mean) / std)
 
     def test_invalid_normalization_modes_are_rejected(self):
         for mode in (True, False, None, "invalid"):
@@ -116,7 +155,7 @@ class NormalizationTests(unittest.TestCase):
         cfg = OmegaConf.create({
             "dataset": {"root": "unused", "crop": "tomato", "model": "fcdensenet",
                         "image": "thermal", "mask": "both",
-                        "interpolation": "nearest", "target": "direct", "mapping": "thermal"},
+                        "interpolation": "nearest", "target": "direct"},
             "train": {"model": "mlp", "batch_size": 2, "seed": 0, "learning_rate": 0.001},
             "transfer": {"freeze_conv1": False, "lr_conv1": 0.0001},
         })
@@ -128,15 +167,15 @@ class NormalizationTests(unittest.TestCase):
                     cfg.train.model = name
                     cfg.train.normalize = normalized
                     if name == "mlp":
-                        model = MLPRegressor(self.data[0].numel(), normalize=normalized, mapping="thermal")
+                        model = MLPRegressor(self.data[0].numel(), normalize=normalized)
                     elif name == "cnn":
-                        model = CNNRegressor(in_channels=3, normalize=normalized, mapping="thermal")
+                        model = CNNRegressor(in_channels=3, normalize=normalized)
                     else:
                         regressors = {"resnet18": ResNet18Regressor,
                                       "resnet34": ResNet34Regressor,
                                       "resnet50": ResNet50Regressor}
                         model = regressors[name](in_channels=3, pretrained=False,
-                                                 normalize=normalized, mapping="thermal")
+                                                 normalize=normalized)
                     model.fit_normalization(self.data)
                     model.eval()
                     with torch.inference_mode():

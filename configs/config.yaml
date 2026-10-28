@@ -7,27 +7,23 @@ dataset:
   crop: tomato
   # model: fcdensenet, frrna
   model: fcdensenet
-  # image: all, thermal, visual
-  image: thermal
+  # image: thermal, visual, both (RGB + temperature + optional hard/soft masks)
+  image: both
   # mask: both, soft, hard, none
   mask: hard
-  # mapping: original, thermal
-  mapping: original
-  # Temperature assigned where a mask is zero (thermal mapping only)
-  mask_fill: 0.0
   # interpolation: nearest, area
   interpolation: nearest
   # target: direct, correction
   target: correction
   # reg_output: canopy, cwsi
-  reg_output: canopy
+  reg_output: cwsi
   # Percentage of upper and lower bound temperature
   bound: 5.0
 
 train:
   seed: 0
   # model: mlp, cnn, resnet18, resnet34, resnet50
-  model: resnet50
+  model: cnn
   # loss: mse, mae
   loss: mse
   epochs: 200
@@ -42,7 +38,7 @@ train:
   normalize: temp
   # name: dataset, train, all
   name: all
-  output: checkpoints/resnet50
+  output: checkpoints/base
 
 # Transfer learning settings shared by all ResNet models
 transfer:
@@ -62,7 +58,7 @@ visualize:
   output: visualize
 
 evaluate:
-  root: checkpoints/resnet50
+  root: checkpoints/base
   # split: train, valid, test
   split: test
   # checkpoint: all, single
@@ -73,7 +69,9 @@ evaluate:
   baseline: false
   # column: dataset, train, all
   column: all
-  output: results/metrics_resnet50.csv
+  # metric: all (one row per temperature), avg (one row combining all temperatures)
+  metric: avg
+  output: results/metrics_base_avg.csv
 
 hydra:
   run:

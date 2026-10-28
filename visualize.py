@@ -5,6 +5,7 @@ from textwrap import fill
 
 import cv2
 import hydra
+import numpy as np
 from hydra.utils import to_absolute_path
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
@@ -12,6 +13,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from evaluate import calculate_metrics
 from utils.dataset import TemperatureDataset
+from utils.regression import output_names
 
 
 @hydra.main(version_base="1.3", config_path="configs", config_name="config")
@@ -23,8 +25,8 @@ def main(cfg: DictConfig) -> None:
     settings["root"] = to_absolute_path(settings["root"])
     # Always retrieve the direct label so both targets can be displayed.
     settings["target"] = "direct"
-    if settings["image"] not in {"thermal", "visual"}:
-        raise ValueError("dataset.image must be thermal or visual")
+    if settings["image"] not in {"thermal", "visual", "both"}:
+        raise ValueError("dataset.image must be thermal, visual, or both")
     if settings["mask"] not in {"none", "hard", "soft", "both"}:
         raise ValueError("dataset.mask must be none, hard, soft, or both")
     # Display every thermal channel regardless of the selected training inputs.
@@ -34,15 +36,12 @@ def main(cfg: DictConfig) -> None:
         raise ValueError(f"visualize.index must be between 0 and {len(dataset) - 1}")
     data, target, metadata = dataset.get_sample(index)
 
-    baseline = float(metadata["baseline"])
-    actual = float(target)
+    baseline = np.asarray(metadata["baseline"]).reshape(-1)
+    actual = np.asarray(target).reshape(-1)
     correction = actual - baseline
-    metrics = calculate_metrics([actual], [baseline])
 
     names = ["Temperatures", "Hard mask", "Soft mask"]
-    mapped = settings.get("mapping", "original") == "thermal"
-    channels = [(f"{name} × temperature" if mapped and i > 0 else name,
-                 data[..., i], "inferno" if i == 0 or mapped else "gray")
+    channels = [(name, data[..., i], "inferno" if i == 0 else "gray")
                 for i, name in enumerate(names)]
     channels.append(("label", metadata["thermal_label_mask"], "gray"))
     visual_channels = [
@@ -52,13 +51,20 @@ def main(cfg: DictConfig) -> None:
         ("visual_label_mask", dataset.visual_label_masks[index], "gray"),
     ]
 
-    lines = [f"thermal_label_target (actual): {actual:.4f} °C",
-             f"thermal_hard_target (baseline): {baseline:.4f} °C",
-             f"Label (direct): {actual:.4f} °C",
-             f"Label (correction): {correction:.4f} °C",
-             " | ".join(
-                 f"{name.upper()}: {metrics[name]:.4f}" for name in ("rmse", "mse", "mae", "mbe")),
-             "", "Dataset configuration:"]
+    lines = []
+    display_names = {"canopy": "Canopy", "upper_tail": "Upper bound", "lower_tail": "Lower bound"}
+    for i, name in enumerate(output_names(settings.get("reg_output", "canopy"))):
+        lines.append(
+            f"{display_names[name]}: actual / label (direct): {actual[i]:.4f} °C | "
+            f"hard-mask baseline: {baseline[i]:.4f} °C | "
+            f"label (correction): {correction[i]:.4f} °C"
+        )
+    metrics = calculate_metrics(actual, baseline)
+    cwsi = settings.get("reg_output", "canopy") == "cwsi"
+    lines.append("Baseline metrics (all three temperatures):" if cwsi else "Baseline metrics (canopy):")
+    metric_names = ("r2", "rmse", "mse", "mae", "mbe") if cwsi else ("rmse", "mse", "mae", "mbe")
+    lines.append(" | ".join(f"{key.upper()}: {metrics[key]:.4f}" for key in metric_names))
+    lines.extend(["", "Dataset configuration:"])
     text = ", ".join(f"{key}={value}" for key, value in
                      OmegaConf.to_container(cfg.dataset, resolve=True).items() if key != "target")
     lines.append(fill(text, width=110, subsequent_indent="  "))
@@ -72,7 +78,7 @@ def main(cfg: DictConfig) -> None:
     panels.extend((1, i, channel) for i, channel in enumerate(channels))
     for row, column, (name, image, cmap) in panels:
         axes = figure.add_subplot(grid[row, column])
-        binary_or_soft = "mask" in name and "× temperature" not in name
+        binary_or_soft = "mask" in name
         limits = {"vmin": 0, "vmax": 1} if binary_or_soft or name == "label" else {}
         if name in {"label", "visual_label_mask", "visual_hard_mask"}:
             limits["interpolation"] = "nearest"
@@ -89,8 +95,9 @@ def main(cfg: DictConfig) -> None:
     output.mkdir(parents=True, exist_ok=True)
     name = "_".join(str(cfg.dataset[key]) for key in
                     ("crop", "model", "image", "mask", "interpolation"))
-    if settings["image"] == "thermal" and settings.get("mapping", "original") == "thermal":
-        name += f"_mapping-thermal_fill{settings.get('mask_fill', 0.0)}"
+    name += f"_{settings.get('reg_output', 'canopy')}"
+    if settings.get("reg_output", "canopy") == "cwsi":
+        name += f"_{settings.get('bound', 5.0)}"
     path = output / f"{name}_{split}_{index}.png"
     figure.savefig(path, dpi=150)
     print(f"Saved visualization: {path}")
