@@ -7,13 +7,17 @@ import cv2
 
 class TemperatureDataset(Dataset):
     def __init__(self, root, split, crop, model, image, mask, interpolation, target,
-                 mapping="original", mask_fill=0.0):
+                 mapping="original", mask_fill=0.0, reg_output="canopy", bound=5.0):
         if mask not in {"none", "hard", "soft", "both"}:
             raise ValueError("mask must be none, hard, soft, or both")
         if mapping not in {"original", "thermal"}:
             raise ValueError("mapping must be original or thermal")
         if not np.isfinite(mask_fill):
             raise ValueError("mask_fill must be finite")
+        if reg_output not in {"canopy", "cwsi"}:
+            raise ValueError("reg_output must be canopy or cwsi")
+        if not np.isfinite(bound) or not 0 < bound <= 50:
+            raise ValueError("bound must be a percentage greater than 0 and at most 50")
         self.root = Path(root)
         self.split = split
         self.crop = crop
@@ -24,6 +28,8 @@ class TemperatureDataset(Dataset):
         self.target = target
         self.mapping = mapping
         self.mask_fill = mask_fill
+        self.reg_output = reg_output
+        self.bound = bound
 
         (
             self.thermal_images,
@@ -39,6 +45,17 @@ class TemperatureDataset(Dataset):
     def __getitem__(self, index):
         data, target, _ = self.get_sample(index)
         return data, target
+
+    def _temperature_targets(self, thermal_image, mask):
+        """Return canopy mean or [canopy mean, upper-tail mean, lower-tail mean]."""
+        canopy = np.sum(thermal_image * mask) / mask.sum()
+        if self.reg_output == "canopy":
+            return canopy
+        temperatures = np.sort(thermal_image[mask > 0])
+        # Round up so even small masks contribute at least one pixel per tail.
+        count = max(1, int(np.ceil(temperatures.size * self.bound / 100.0)))
+        return np.array([canopy, temperatures[-count:].mean(),
+                         temperatures[:count].mean()], dtype=np.float32)
 
     def get_sample(self, index):
         """Return inputs, target, and thermal label mask/baseline for visualization."""
@@ -81,14 +98,8 @@ class TemperatureDataset(Dataset):
         if weight_sum_label == 0 or weight_sum_hard == 0:
             raise ValueError(f"Empty target mask at index {index}")
 
-        thermal_label_target = (
-            np.sum(thermal_image * thermal_label_mask)
-            / weight_sum_label
-        )
-        thermal_hard_target = (
-            np.sum(thermal_image * thermal_hard_mask)
-            / weight_sum_hard
-        )
+        thermal_label_target = self._temperature_targets(thermal_image, thermal_label_mask)
+        thermal_hard_target = self._temperature_targets(thermal_image, thermal_hard_mask)
 
         if self.target == "direct":
             thermal_target = thermal_label_target

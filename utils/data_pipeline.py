@@ -1,11 +1,10 @@
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
-import cv2
 from utils.dataset import TemperatureDataset
 
 def load_dataset(cfg, split="train", return_metadata=False):
-    """Load float32 inputs (N, C, H, W) and regression targets (N, 1)."""
+    """Load float32 inputs (N, C, H, W) and targets (N, 1) or (N, 3)."""
     mask = cfg.dataset.mask
 
     if cfg.dataset.image not in {"thermal", "visual"}:
@@ -26,26 +25,19 @@ def load_dataset(cfg, split="train", return_metadata=False):
         target=cfg.dataset.target,
         mapping=getattr(cfg.dataset, "mapping", "original"),
         mask_fill=getattr(cfg.dataset, "mask_fill", 0.0),
+        reg_output=getattr(cfg.dataset, "reg_output", "canopy"),
+        bound=getattr(cfg.dataset, "bound", 5.0),
     )
 
     images = []
     targets = []
     baselines = []
     for index in range(len(dataset)):
-        image, target = dataset[index]
+        image, target, metadata = dataset.get_sample(index)
         images.append(image)
         targets.append(target)
         if return_metadata:
-            thermal = dataset.thermal_images[index]
-            interpolation = {"nearest": cv2.INTER_NEAREST, "area": cv2.INTER_AREA}[
-                cfg.dataset.interpolation
-            ]
-            weights = cv2.resize(
-                dataset.visual_hard_masks[index].astype(np.float32),
-                (thermal.shape[1], thermal.shape[0]),
-                interpolation=interpolation,
-            )
-            baselines.append(float(np.sum(thermal * weights) / weights.sum()))
+            baselines.append(metadata["baseline"])
 
     if not images:
         raise ValueError(f"No samples found for split: {split}")
@@ -58,12 +50,12 @@ def load_dataset(cfg, split="train", return_metadata=False):
     data = torch.from_numpy(np.stack(images)).float()
     # (N, C, H, W)
     data = data.permute(0, 3, 1, 2).contiguous()
-    # (N, 1)
-    labels = torch.tensor(targets, dtype=torch.float32).reshape(-1, 1)
+    # Preserve the sample dimension for both scalar and three-value targets.
+    labels = torch.as_tensor(np.stack(targets), dtype=torch.float32).reshape(len(targets), -1)
 
     if return_metadata:
-        baseline = torch.tensor(baselines, dtype=torch.float64).reshape(-1, 1)
-        reference = torch.tensor(targets, dtype=torch.float64).reshape(-1, 1)
+        baseline = torch.as_tensor(np.stack(baselines), dtype=torch.float64).reshape(len(targets), -1)
+        reference = torch.as_tensor(np.stack(targets), dtype=torch.float64).reshape(len(targets), -1)
         if cfg.dataset.target == "correction":
             reference = reference + baseline
         return data, labels, {"baseline": baseline, "reference": reference}
