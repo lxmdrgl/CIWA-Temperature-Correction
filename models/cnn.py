@@ -13,14 +13,14 @@ class CNNRegressor(TemperatureNormalizedRegressor):
         
         self.features = nn.Sequential(
             # c -> 32
-            nn.Conv2d(self.in_channels , 32, kernel_size=5, padding=1, bias=False),
+            nn.Conv2d(self.in_channels , 32, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2),
             nn.Dropout2d(self.dropout),
 
             # 32 -> 64
-            nn.Conv2d(32, 64, kernel_size=5, padding=1, bias=False),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(2),
