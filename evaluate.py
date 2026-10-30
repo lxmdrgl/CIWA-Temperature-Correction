@@ -95,6 +95,7 @@ def evaluate_checkpoint(checkpoint_path, split="test",
         regressors = {"resnet18": ResNet18Regressor, "resnet34": ResNet34Regressor,
                       "resnet50": ResNet50Regressor}
         model = regressors[cfg.train.model](
+            **({"crop": cfg.dataset.crop} if cfg.train.model == "resnet50" else {}),
             num_outputs=num_outputs,
             in_channels=data.shape[1], image=cfg.dataset.image, pretrained=False,
             normalize=normalized,
@@ -112,7 +113,7 @@ def evaluate_checkpoint(checkpoint_path, split="test",
     prediction = torch.cat(predictions).numpy()
     if prediction.shape != reference.shape:
         raise ValueError("Model output shape must match reference shape")
-    if cfg.dataset.target == "correction":
+    if cfg.dataset.target == "residual":
         prediction = baseline + prediction
 
     return write_metrics(

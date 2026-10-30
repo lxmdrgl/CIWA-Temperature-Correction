@@ -44,7 +44,8 @@ class RegressionOutputTests(unittest.TestCase):
             "resnet34": lambda: ResNet34Regressor(in_channels=1, num_outputs=3,
                                                  normalize="none", pretrained=False),
             "resnet50": lambda: ResNet50Regressor(in_channels=1, num_outputs=3,
-                                                 normalize="none", pretrained=False),
+                                                 normalize="none", pretrained=False,
+                                                 crop=cfg.dataset.crop),
         }
         with TemporaryDirectory() as directory, patch("torch.cuda.is_available", return_value=False):
             for name, build in builders.items():
@@ -56,7 +57,7 @@ class RegressionOutputTests(unittest.TestCase):
                     head.weight.zero_()
                     head.bias.copy_(delta)
                 cfg.train.model = name
-                for target in ("direct", "correction"):
+                for target in ("direct", "residual"):
                     cfg.dataset.target = target
                     checkpoint = Path(directory) / f"{name}_{target}.pt"
                     torch.save({"config": OmegaConf.to_container(cfg), "epoch": 1,
@@ -72,7 +73,7 @@ class RegressionOutputTests(unittest.TestCase):
                             self.assertEqual([row["output"] for row in rows],
                                              ["canopy", "upper_tail", "lower_tail"])
                             expected = (delta.numpy() if baseline_only else
-                                        np.zeros(3) if target == "correction" else
+                                        np.zeros(3) if target == "residual" else
                                         baseline.numpy().mean(axis=0))
                             np.testing.assert_allclose([row["mae"] for row in rows], expected)
                             self.assertTrue(all(row["samples"] == 2 for row in rows))

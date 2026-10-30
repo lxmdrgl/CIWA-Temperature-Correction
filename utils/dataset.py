@@ -96,7 +96,7 @@ class TemperatureDataset(Dataset):
 
         if self.target == "direct":
             thermal_target = thermal_label_target
-        elif self.target == "correction":
+        elif self.target == "residual":
             thermal_target = thermal_label_target - thermal_hard_target
 
         if self.image == "thermal":

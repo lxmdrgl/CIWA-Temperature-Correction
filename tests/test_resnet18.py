@@ -122,8 +122,54 @@ class ResNet18Tests(unittest.TestCase):
                     torch.testing.assert_close(conv, before_conv if freeze_conv1 else before_conv - 0.0001)
                     torch.testing.assert_close(head, before_head - 0.01)
 
+    def test_block_overrides_and_learning_rates(self):
+        for freeze_backbone in (False, True):
+            for freeze_layer1, freeze_layer4 in ((False, False), (False, True),
+                                                (True, False), (True, True)):
+                with self.subTest(backbone=freeze_backbone, layer1=freeze_layer1,
+                                  layer4=freeze_layer4):
+                    with patch(f"models.{self.model_name}.{self.model_name}",
+                               return_value=self.builder(weights=None)):
+                        model = self.model_type(pretrained=True, freeze_backbone=freeze_backbone,
+                                                freeze_layer1=freeze_layer1,
+                                                freeze_layer4=freeze_layer4)
+                    model.eval()
+                    model.train()
+                    self.assertEqual(model.backbone.layer1[0].conv1.weight.requires_grad,
+                                     not freeze_layer1)
+                    self.assertEqual(model.backbone.layer4[0].conv1.weight.requires_grad,
+                                     not freeze_layer4)
+                    for layer in (model.backbone.layer2, model.backbone.layer3):
+                        self.assertEqual(layer[0].conv1.weight.requires_grad, not freeze_backbone)
+                    for layer, frozen in ((model.backbone.layer1, freeze_layer1),
+                                          (model.backbone.layer4, freeze_layer4)):
+                        bn = layer[0].bn1
+                        self.assertEqual(bn.training, not (freeze_backbone or frozen))
+                        self.assertEqual(bn.weight.requires_grad, not (freeze_backbone or frozen))
+                    optimizer = torch.optim.SGD(model.optimizer_parameter_groups(1e-4, 1e-5), lr=1e-3)
+                    grouped = [p for group in optimizer.param_groups for p in group["params"]]
+                    self.assertEqual(len(grouped), len({id(p) for p in grouped}))
+                    self.assertEqual({id(p) for p in grouped},
+                                     {id(p) for p in model.parameters() if p.requires_grad})
+                    rates = {id(p): group["lr"] for group in optimizer.param_groups
+                             for p in group["params"]}
+                    for name, parameter in model.named_parameters():
+                        if not parameter.requires_grad:
+                            continue
+                        expected = (1e-4 if name.startswith("backbone.conv1.") else
+                                    1e-5 if name.startswith(("backbone.layer1.", "backbone.layer4."))
+                                    else 1e-3)
+                        self.assertEqual(rates[id(parameter)], expected)
+                    weight = model.backbone.layer4[0].conv1.weight
+                    before = weight.detach().clone()
+                    if weight.requires_grad:
+                        weight.grad = torch.ones_like(weight)
+                    optimizer.step()
+                    torch.testing.assert_close(weight, before if freeze_layer4 else before - 1e-5)
+
     def test_saved_normalization_is_used_in_evaluation_for_both_targets(self):
-        model = self.model_type(in_channels=3, pretrained=False)
+        crop_settings = {"crop": "tomato"} if self.model_name == "resnet50" else {}
+        model = self.model_type(in_channels=3, pretrained=False, **crop_settings)
         data = torch.zeros(2, 3, 32, 32)
         data[0, 0] = 10.
         data[1, 0] = 20.
@@ -136,18 +182,18 @@ class ResNet18Tests(unittest.TestCase):
         cfg = OmegaConf.create({
             "dataset": {"root": "unused", "crop": "tomato", "model": "fcdensenet",
                         "image": "thermal", "mask": "both",
-                        "interpolation": "nearest", "target": "correction"},
+                        "interpolation": "nearest", "target": "residual"},
             "train": {"model": self.model_name, "batch_size": 2, "seed": 0, "normalize": "temp",
                       "learning_rate": 0.001},
             "transfer": {"freeze_conv1": True, "lr_conv1": 0.0001},
         })
         with TemporaryDirectory() as directory:
             checkpoint = Path(directory) / "resnet18.pt"
-            for target in ("direct", "correction"):
+            for target in ("direct", "residual"):
                 cfg.dataset.target = target
                 state = model.state_dict()
                 saved_config = OmegaConf.to_container(cfg)
-                if target == "correction":
+                if target == "residual":
                     # Existing checkpoints must still evaluate after the config move.
                     saved_config["train"]["transfer"] = saved_config.pop("transfer")
                 torch.save({"config": saved_config, "epoch": 1,
@@ -158,11 +204,11 @@ class ResNet18Tests(unittest.TestCase):
                     rows = evaluate_checkpoint(checkpoint, output=Path(directory) / "metrics.csv",
                                                include_baseline=False)
                 self.assertEqual(rows[0]["model"], self.model_name)
-                self.assertEqual(rows[0]["mae"], 0. if target == "correction" else 17.5)
+                self.assertEqual(rows[0]["mae"], 0. if target == "residual" else 17.5)
                 self.assertEqual(len(rows), 1)
                 self.assertEqual(rows[0]["kind"], "model")
                 self.assertEqual(list(rows[0])[-2:], ["config", "checkpoint"])
-            restored = self.model_type(pretrained=False)
+            restored = self.model_type(pretrained=False, **crop_settings)
             restored.load_state_dict(torch.load(checkpoint, weights_only=True)["model_state_dict"])
             self.assertEqual(restored.input_mean.item(), 15.)
             self.assertEqual(restored.input_std.item(), 5.)
@@ -179,6 +225,54 @@ class ResNet50Tests(ResNet18Tests):
     model_type = ResNet50Regressor
     model_name = "resnet50"
     builder = staticmethod(resnet50)
+
+    def test_tomato_stem_preserves_60_pixel_inputs_for_all_image_modes(self):
+        for image, channels in (("thermal", 3), ("visual", 3), ("both", 6)):
+            with self.subTest(image=image):
+                model = ResNet50Regressor(crop="tomato", image=image, in_channels=channels,
+                                          pretrained=False, normalize="none", num_outputs=3)
+                model.eval()
+                conv = model.backbone.conv1
+                self.assertEqual(conv.kernel_size, (3, 3))
+                self.assertEqual(conv.stride, (1, 1))
+                self.assertEqual(conv.padding, (1, 1))
+                self.assertIsInstance(model.backbone.maxpool, torch.nn.Identity)
+                data = torch.zeros(2, channels, 60, 60)
+                with torch.inference_mode():
+                    stem = model.backbone.maxpool(conv(data))
+                    self.assertEqual(stem.shape, (2, 64, 60, 60))
+                    self.assertEqual(model(data).shape, (2, 3))
+
+    def test_other_crops_keep_standard_stem(self):
+        for crop in (None, "maize"):
+            with self.subTest(crop=crop):
+                model = ResNet50Regressor(crop=crop, pretrained=False)
+                self.assertEqual(model.backbone.conv1.kernel_size, (7, 7))
+                self.assertEqual(model.backbone.conv1.stride, (2, 2))
+                self.assertIsInstance(model.backbone.maxpool, torch.nn.MaxPool2d)
+
+    def test_tomato_pretrained_filters_keep_channel_adaptation_and_freezing(self):
+        for image, channels in (("thermal", 3), ("visual", 3), ("both", 6)):
+            with self.subTest(image=image):
+                backbone = resnet50(weights=None)
+                center = backbone.conv1.weight.detach()[:, :, 2:5, 2:5].clone()
+                with patch("models.resnet50.resnet50", return_value=backbone):
+                    model = ResNet50Regressor(crop="tomato", image=image, in_channels=channels,
+                                              pretrained=True, freeze_backbone=True,
+                                              freeze_conv1=True)
+                weights = model.backbone.conv1.weight
+                if image == "thermal":
+                    torch.testing.assert_close(weights[:, :1], center.sum(dim=1, keepdim=True))
+                    self.assertEqual(torch.count_nonzero(weights[:, 1:]).item(), 0)
+                elif image == "both":
+                    torch.testing.assert_close(weights[:, :3], center * 0.75)
+                    torch.testing.assert_close(weights[:, 3:4], center.mean(dim=1, keepdim=True) * 0.75)
+                    self.assertEqual(torch.count_nonzero(weights[:, 4:]).item(), 0)
+                else:
+                    torch.testing.assert_close(weights, center)
+                self.assertFalse(weights.requires_grad)
+                self.assertFalse(model.backbone.bn1.training)
+                self.assertTrue(model.backbone.fc.weight.requires_grad)
 
 
 if __name__ == "__main__":

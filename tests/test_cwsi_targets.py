@@ -9,7 +9,7 @@ from utils.dataset import TemperatureDataset
 
 
 class CwsiTargetTests(unittest.TestCase):
-    def test_direct_and_correction_targets_keep_three_outputs_per_sample(self):
+    def test_direct_and_residual_targets_keep_three_outputs_per_sample(self):
         thermal = np.arange(1, 101, dtype=np.float32).reshape(10, 10)
         label = np.ones_like(thermal)
         label[0] = 0  # Exclude the coldest ten pixels from the label canopy.
@@ -24,7 +24,7 @@ class CwsiTargetTests(unittest.TestCase):
         expected = np.array([[55.5, 98., 13.]] * 2)
         baseline = np.array([[50.5, 98., 3.]] * 2)
         with patch.object(TemperatureDataset, "get_data", return_value=source):
-            for target in ("direct", "correction"):
+            for target in ("direct", "residual"):
                 with self.subTest(target=target):
                     cfg.dataset.target = target
                     _, labels, metadata = load_dataset(cfg, return_metadata=True)

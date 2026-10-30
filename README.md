@@ -78,14 +78,21 @@ torchvision's corresponding ImageNet weights and a new regression
 layer. They share the `transfer` settings. The first pretrained run downloads
 the selected model's weights;
 later runs use the local cache. `transfer.pretrained=false` trains from
-scratch. Both direct and correction targets are supported.
+scratch. Both direct and residual targets are supported.
+
+With `train.model=resnet50` and `dataset.crop=tomato`, the input convolution uses
+a 3×3 kernel, stride 1, and padding 1, and max pooling is replaced by identity.
+This preserves the 60×60 input resolution through the stem. Pretrained weights
+use the center 3×3 of the ImageNet filters before input-channel adaptation.
+Other crops and ResNet variants retain their standard stems. Evaluation restores
+the stem using the crop in the saved training configuration.
 
 All models use `dataset.reg_output=canopy` (default) for one canopy-mean
 temperature output, or `dataset.reg_output=cwsi` for three temperature outputs
 in this order: canopy mean, upper-tail mean, lower-tail mean. These are the
 three temperatures used for CWSI, rather than a calculated CWSI index.
 `dataset.bound` sets the percentage of canopy pixels in each tail (default 5%).
-For correction targets, each output learns the difference from its corresponding
+For residual targets, each output learns the difference from its corresponding
 hard-mask baseline. Training loss averages over samples and outputs.
 
 ```powershell
@@ -98,7 +105,7 @@ metrics row for each temperature, identified by `output` (`canopy`, `upper_tail`
 `reg_output` and `bound` in every column mode; use a new results file if an
 existing CSV has the older columns. Older checkpoints without `reg_output`
 continue to use one canopy output. Visualizations display the corresponding
-direct and correction temperatures for each output. Checkpoint and visualization
+direct and residual temperatures for each output. Checkpoint and visualization
 filenames include the output mode and, for CWSI, the tail percentage.
 
 `evaluate.metric=all` (default) reports each temperature separately.
@@ -118,7 +125,7 @@ effect on temperature-only or visual inputs. Mask weights are learned when
 
 `dataset.mask` selects input channels: `none` uses temperature only; `hard` adds
 the hard mask; `soft` adds the probability mask; `both` adds hard and soft masks,
-in that order. The hard mask is still used to calculate the correction target and
+in that order. The hard mask is still used to calculate the residual target and
 baseline even when it is excluded from the inputs.
 
 `dataset.image=visual` converts OpenCV's BGR image to RGB and preserves its
@@ -171,13 +178,21 @@ Standardization follows scaling, so final color values can fall outside 0–1.
 No center crop is applied;
 combined inputs use the thermal image resolution.
 
-By default, all ResNet layers are fine-tuned. Set
-`transfer.freeze_backbone=true` to freeze residual blocks and BatchNorm
+`transfer.freeze_backbone=true` freezes the backbone and BatchNorm
 parameters/statistics while keeping the regression head trainable.
 `transfer.freeze_conv1` independently controls the first convolution:
 `false` trains it, and `true` freezes it, regardless of `freeze_backbone`.
-Trainable first-convolution weights use `transfer.lr_conv1`;
-other trainable parameters use `train.learning_rate`.
+`transfer.freeze_layer1` and `transfer.freeze_layer4` independently override
+backbone freezing for those blocks: `false` trains the block and `true` freezes it.
+Omitting a block override follows `freeze_backbone`. With `freeze_backbone=true`,
+BatchNorm stays frozen even inside an unfrozen block. With `freeze_backbone=false`,
+explicitly frozen blocks keep their BatchNorm statistics fixed.
+Trainable first-convolution weights use `transfer.lr_conv1`, and trainable
+`layer1`/`layer4` weights use `transfer.lr_layer`. Other trainable parameters,
+including the regression head, use `train.learning_rate`.
+The supplied configuration trains `conv1`, `layer1`, `layer4`, and the head,
+with learning rates `1e-4`, `1e-5`, `1e-5`, and `1e-3`, respectively;
+`layer2`, `layer3`, and all BatchNorm layers stay frozen.
 Freezing the backbone requires pretrained weights. Evaluation creates the architecture
 without downloading ImageNet weights, then restores the saved checkpoint.
 

@@ -66,11 +66,14 @@ def main(cfg: DictConfig) -> None:
         regressors = {"resnet18": ResNet18Regressor, "resnet34": ResNet34Regressor,
                       "resnet50": ResNet50Regressor}
         model = regressors[cfg.train.model](
+            **({"crop": cfg.dataset.crop} if cfg.train.model == "resnet50" else {}),
             num_outputs=num_outputs,
             in_channels=train_data.shape[1], image=cfg.dataset.image,
             pretrained=cfg.transfer.pretrained,
             freeze_backbone=cfg.transfer.freeze_backbone,
             freeze_conv1=cfg.transfer.freeze_conv1,
+            freeze_layer1=cfg.transfer.get("freeze_layer1"),
+            freeze_layer4=cfg.transfer.get("freeze_layer4"),
             mask_init=cfg.transfer.get("mask_init", "zero"),
             normalize=cfg.train.normalize,
         )
@@ -86,7 +89,8 @@ def main(cfg: DictConfig) -> None:
                   "sgd": torch.optim.SGD}
     if cfg.train.optimizer not in optimizers:
         raise ValueError(f"Invalid optimizer: {cfg.train.optimizer}")
-    parameters = (model.optimizer_parameter_groups(cfg.transfer.lr_conv1)
+    parameters = (model.optimizer_parameter_groups(cfg.transfer.lr_conv1,
+                                                   cfg.transfer.get("lr_layer", 1e-5))
                   if cfg.train.model in {"resnet18", "resnet34", "resnet50"}
                   else (parameter for parameter in model.parameters() if parameter.requires_grad))
     optimizer = optimizers[cfg.train.optimizer](

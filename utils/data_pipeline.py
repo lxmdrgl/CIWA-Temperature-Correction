@@ -11,7 +11,7 @@ def load_dataset(cfg, split="train", return_metadata=False):
         raise ValueError(f"Invalid image type: {cfg.dataset.image}")
     if mask not in {"none", "hard", "soft", "both"}:
         raise ValueError(f"Invalid mask: {mask}")
-    if cfg.dataset.target not in {"direct", "correction"}:
+    if cfg.dataset.target not in {"direct", "residual"}:
         raise ValueError(f"Invalid target: {cfg.dataset.target}")
 
     dataset = TemperatureDataset(
@@ -54,7 +54,7 @@ def load_dataset(cfg, split="train", return_metadata=False):
     if return_metadata:
         baseline = torch.as_tensor(np.stack(baselines), dtype=torch.float64).reshape(len(targets), -1)
         reference = torch.as_tensor(np.stack(targets), dtype=torch.float64).reshape(len(targets), -1)
-        if cfg.dataset.target == "correction":
+        if cfg.dataset.target == "residual":
             reference = reference + baseline
         return data, labels, {"baseline": baseline, "reference": reference}
     return data, labels

@@ -42,7 +42,7 @@ class EvaluationTests(unittest.TestCase):
                         evaluate_checkpoint(checkpoint)
                 load.assert_not_called()
 
-    def test_correction_reference_is_reconstructed_from_baseline(self):
+    def test_residual_reference_is_reconstructed_from_baseline(self):
         class ExampleDataset:
             thermal_images = [np.array([[10., 20.], [30., 40.]])]
             visual_hard_masks = [np.array([[1, 1], [0, 0]])]
@@ -55,7 +55,7 @@ class EvaluationTests(unittest.TestCase):
 
         cfg = SimpleNamespace(dataset=SimpleNamespace(
             root="unused", crop="tomato", model="fcdensenet", image="thermal",
-            mask="both", interpolation="nearest", target="correction",
+            mask="both", interpolation="nearest", target="residual",
         ))
         with patch("utils.data_pipeline.TemperatureDataset", return_value=ExampleDataset()):
             data, labels, metadata = load_dataset(cfg, return_metadata=True)
@@ -95,11 +95,17 @@ class EvaluationTests(unittest.TestCase):
                         with self.assertRaisesRegex(RuntimeError, "constructor reached"):
                             main.__wrapped__(cfg)
                     self.assertEqual(build.call_args.kwargs["normalize"], normalize)
+                    if name == "resnet50":
+                        self.assertEqual(build.call_args.kwargs["crop"], cfg.dataset.crop)
                     if name.startswith("resnet"):
                         self.assertFalse(build.call_args.kwargs["pretrained"])
                         self.assertFalse(build.call_args.kwargs["freeze_backbone"])
                         self.assertEqual(build.call_args.kwargs["freeze_conv1"],
                                          cfg.transfer.freeze_conv1)
+                        self.assertEqual(build.call_args.kwargs["freeze_layer1"],
+                                         cfg.transfer.freeze_layer1)
+                        self.assertEqual(build.call_args.kwargs["freeze_layer4"],
+                                         cfg.transfer.freeze_layer4)
                         self.assertEqual(build.call_args.kwargs["mask_init"],
                                          cfg.transfer.mask_init)
 
@@ -162,7 +168,7 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(len(canopy), 1)
             self.assertAlmostEqual(canopy[0]["mse"], 8.5)
 
-    def test_avg_checkpoint_evaluation_combines_reconstructed_corrections(self):
+    def test_avg_checkpoint_evaluation_combines_reconstructed_residuals(self):
         class ConstantModel(torch.nn.Module):
             def forward(self, inputs):
                 return torch.tensor([1., -2., 3.], device=inputs.device).expand(len(inputs), -1)
@@ -170,7 +176,7 @@ class EvaluationTests(unittest.TestCase):
         cfg = OmegaConf.create({
             "dataset": {"root": "unused", "crop": "tomato", "model": "fcdensenet",
                         "image": "thermal", "mask": "hard", "interpolation": "nearest",
-                        "target": "correction", "reg_output": "cwsi"},
+                        "target": "residual", "reg_output": "cwsi"},
             "train": {"model": "mlp", "batch_size": 2, "seed": 0,
                       "normalize": "none", "learning_rate": 0.001},
         })
@@ -228,7 +234,7 @@ class EvaluationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "evaluate.split"):
                 run_evaluation(cfg)
 
-    def test_checkpoint_baseline_toggle_preserves_correction_predictions(self):
+    def test_checkpoint_baseline_toggle_preserves_residual_predictions(self):
         class ConstantModel(torch.nn.Module):
             def forward(self, inputs):
                 return torch.full((len(inputs), 1), 2., device=inputs.device)
@@ -236,7 +242,7 @@ class EvaluationTests(unittest.TestCase):
         cfg = OmegaConf.create({
             "dataset": {"root": "unused", "crop": "tomato", "model": "fcdensenet",
                         "image": "thermal", "mask": "both",
-                        "interpolation": "nearest", "target": "correction"},
+                        "interpolation": "nearest", "target": "residual"},
             "train": {"model": "mlp", "batch_size": 2, "seed": 7, "normalize": "none",
                       "learning_rate": 0.001},
         })

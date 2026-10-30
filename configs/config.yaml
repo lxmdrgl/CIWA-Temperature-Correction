@@ -13,8 +13,8 @@ dataset:
   mask: hard
   # interpolation: nearest, area
   interpolation: nearest
-  # target: direct, correction
-  target: correction
+  # target: direct, residual
+  target: residual
   # reg_output: canopy, cwsi
   reg_output: cwsi
   # Percentage of upper and lower bound temperature
@@ -23,7 +23,7 @@ dataset:
 train:
   seed: 0
   # model: mlp, cnn, resnet18, resnet34, resnet50
-  model: cnn
+  model: resnet50
   # loss: mse, mae
   loss: mse
   epochs: 200
@@ -38,16 +38,20 @@ train:
   normalize: temp
   # name: dataset, train, all
   name: all
-  output: checkpoints/base
+  output: checkpoints/test_resnet
 
 # Transfer learning settings shared by all ResNet models
 transfer:
   pretrained: true
-  # Freeze residual blocks and BatchNorm; the regression head stays trainable
+  # Freeze backbone and BatchNorm; conv1/layer1/layer4 have independent overrides
   freeze_backbone: true
   freeze_conv1: false
-  # Applied only when conv1 is trainable; other layers use train.learning_rate
+  # Applied only when conv1 is trainable
   lr_conv1: 0.0001
+  freeze_layer1: false
+  freeze_layer4: true
+  # Shared learning rate for trainable layer1/layer4; fc uses train.learning_rate
+  lr_layer: 0.00001
   # mask_init: zero, default
   mask_init: zero
 
@@ -58,7 +62,7 @@ visualize:
   output: visualize
 
 evaluate:
-  root: checkpoints/base
+  root: checkpoints/test_resnet
   # split: train, valid, test
   split: test
   # checkpoint: all, single
@@ -71,7 +75,7 @@ evaluate:
   column: all
   # metric: all (one row per temperature), avg (one row combining all temperatures)
   metric: avg
-  output: results/metrics_base_avg.csv
+  output: results/metrics_resnet50.csv
 
 hydra:
   run:

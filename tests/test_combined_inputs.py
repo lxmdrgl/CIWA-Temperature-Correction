@@ -33,7 +33,7 @@ class CombinedInputTests(unittest.TestCase):
         cfg = OmegaConf.create({"dataset": {
             "root": "unused", "crop": "tomato", "model": "fcdensenet",
             "image": "both", "mask": "both", "interpolation": "nearest",
-            "target": "correction",
+            "target": "residual",
             "reg_output": "canopy",
         }})
         with patch.object(TemperatureDataset, "get_data", return_value=source):
@@ -114,7 +114,8 @@ class CombinedInputTests(unittest.TestCase):
             "cnn": lambda: CNNRegressor(in_channels=6, image="both", num_outputs=3),
             "resnet18": lambda: ResNet18Regressor(in_channels=6, image="both", num_outputs=3, pretrained=False),
             "resnet34": lambda: ResNet34Regressor(in_channels=6, image="both", num_outputs=3, pretrained=False),
-            "resnet50": lambda: ResNet50Regressor(in_channels=6, image="both", num_outputs=3, pretrained=False),
+            "resnet50": lambda: ResNet50Regressor(in_channels=6, image="both", num_outputs=3,
+                                                 pretrained=False, crop=cfg.dataset.crop),
         }
         with TemporaryDirectory() as directory, patch("torch.cuda.is_available", return_value=False):
             for name, build in builders.items():

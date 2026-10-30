@@ -38,7 +38,7 @@ def main(cfg: DictConfig) -> None:
 
     baseline = np.asarray(metadata["baseline"]).reshape(-1)
     actual = np.asarray(target).reshape(-1)
-    correction = actual - baseline
+    residual = actual - baseline
 
     names = ["Temperatures", "Hard mask", "Soft mask"]
     channels = [(name, data[..., i], "inferno" if i == 0 else "gray")
@@ -57,7 +57,7 @@ def main(cfg: DictConfig) -> None:
         lines.append(
             f"{display_names[name]}: actual / label (direct): {actual[i]:.4f} °C | "
             f"hard-mask baseline: {baseline[i]:.4f} °C | "
-            f"label (correction): {correction[i]:.4f} °C"
+            f"label (residual): {residual[i]:.4f} °C"
         )
     metrics = calculate_metrics(actual, baseline)
     cwsi = settings.get("reg_output", "canopy") == "cwsi"

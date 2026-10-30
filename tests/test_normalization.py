@@ -175,12 +175,13 @@ class NormalizationTests(unittest.TestCase):
                                       "resnet34": ResNet34Regressor,
                                       "resnet50": ResNet50Regressor}
                         model = regressors[name](in_channels=3, pretrained=False,
+                                                 **({"crop": cfg.dataset.crop} if name == "resnet50" else {}),
                                                  normalize=normalized)
                     model.fit_normalization(self.data)
                     model.eval()
                     with torch.inference_mode():
                         raw = model(self.data).double().numpy().reshape(-1)
-                    for target in ("direct", "correction"):
+                    for target in ("direct", "residual"):
                         with self.subTest(model=name, normalized=normalized, target=target):
                             cfg.dataset.target = target
                             checkpoint = Path(directory) / "model.pt"
@@ -191,7 +192,7 @@ class NormalizationTests(unittest.TestCase):
                             )):
                                 rows = evaluate_checkpoint(checkpoint, output=Path(directory) / "metrics.csv",
                                                            include_baseline=False)
-                            predicted = raw + metadata["baseline"].numpy().reshape(-1) if target == "correction" else raw
+                            predicted = raw + metadata["baseline"].numpy().reshape(-1) if target == "residual" else raw
                             expected = calculate_metrics(metadata["reference"].numpy(), predicted)
                             for metric, value in expected.items():
                                 np.testing.assert_allclose(rows[0][metric], value, rtol=1e-6)

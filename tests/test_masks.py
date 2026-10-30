@@ -19,12 +19,12 @@ class MaskTests(unittest.TestCase):
         cfg = OmegaConf.create({"dataset": {
             "root": "unused", "crop": "tomato", "model": "fcdensenet",
             "image": "thermal", "mask": "none", "interpolation": "nearest",
-            "target": "correction",
+            "target": "residual",
         }})
         masks = {"none": [], "hard": [hard], "soft": [soft], "both": [hard, soft]}
         with patch.object(TemperatureDataset, "get_data", return_value=source):
             for mode, selected in masks.items():
-                for target in ("direct", "correction"):
+                for target in ("direct", "residual"):
                     with self.subTest(mask=mode, target=target):
                         cfg.dataset.mask, cfg.dataset.target = mode, target
                         data, targets, metadata = load_dataset(cfg, return_metadata=True)
