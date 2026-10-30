@@ -1,4 +1,4 @@
-# CIWA-Temperature-Correction
+# CIWA-Temperature-Regression
 
 ## Installation
 
